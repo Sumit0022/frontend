@@ -11,7 +11,8 @@ export default function Dashboard() {
   const [user, setUser] = useState<any>(null);
   const [userData, setUserData] = useState<any>(null);
   const [flatData, setFlatData] = useState<any>(null);
-  const [flatMembers, setFlatMembers] = useState<any[]>([]); // Naya state: Flatmates ki list ke liye
+  const [flatMembers, setFlatMembers] = useState<any[]>([]); 
+  const [flatTransactions, setFlatTransactions] = useState<any[]>([]); // Current flat transactions
   const [isLoading, setIsLoading] = useState(true);
   
   // UI States
@@ -29,7 +30,8 @@ export default function Dashboard() {
   // Add Expense States
   const [expenseDesc, setExpenseDesc] = useState("");
   const [expenseAmt, setExpenseAmt] = useState("");
-  const [expensePaidBy, setExpensePaidBy] = useState("");
+  const [splitType, setSplitType] = useState("all"); 
+  const [splitAmong, setSplitAmong] = useState<string[]>([]); 
 
   // Transfer Admin & Past Flat States
   const [otherMembers, setOtherMembers] = useState<any[]>([]);
@@ -52,16 +54,21 @@ export default function Dashboard() {
           const fData = flatSnap.data();
           setFlatData(fData);
           
-          // Flat ke saare members ka data fetch karna (avatars/names dikhane ke liye)
           if (fData.members && fData.members.length > 0) {
              const memberPromises = fData.members.map((id: string) => getDoc(doc(db, "users", id)));
              const memberSnaps = await Promise.all(memberPromises);
              setFlatMembers(memberSnaps.map(snap => snap.data()));
+
+             // Fetch active transactions for balances
+             const q = query(collection(db, "transactions"), where("flatId", "==", uData.flatId));
+             const txnsSnap = await getDocs(q);
+             setFlatTransactions(txnsSnap.docs.map(d => d.data()));
           }
         }
       } else {
         setFlatData(null);
         setFlatMembers([]);
+        setFlatTransactions([]);
       }
     }
   };
@@ -177,7 +184,7 @@ export default function Dashboard() {
     }
   };
 
-const executeLeaveFlat = async (newAdminId: any = null) => {
+  const executeLeaveFlat = async (newAdminId: any = null) => {
     setIsSubmitting(true);
     try {
       const flatRef = doc(db, "flats", userData.flatId);
@@ -212,21 +219,27 @@ const executeLeaveFlat = async (newAdminId: any = null) => {
   // --- ADD EXPENSE LOGIC ---
   const handleAddExpense = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!expenseDesc || !expenseAmt || !expensePaidBy) return;
+    const finalSplit = splitType === "all" ? flatMembers.map(m => m.uid) : splitAmong;
+    
+    if (!expenseDesc || !expenseAmt || finalSplit.length === 0) {
+      setErrorMsg("Please select at least one person to split with.");
+      return;
+    }
+    
     setIsSubmitting(true);
     setErrorMsg("");
 
     try {
-      const txnId = "txn_" + Date.now(); // Unique ID
+      const txnId = "txn_" + Date.now(); 
       await setDoc(doc(db, "transactions", txnId), {
         transactionId: txnId,
         flatId: userData.flatId,
         description: expenseDesc,
         amount: Number(expenseAmt),
-        paidBy: expensePaidBy,
+        paidBy: user.uid, // Jo add kar raha hai, wahi pay kar raha hai
+        splitAmong: finalSplit, // Kin logo me divide karna hai
         date: new Date().toISOString(),
         type: "expense"
-        // Note: Complex splitting logic hum next phase mein attach karenge
       });
       await loadData(user); 
       closeModal();
@@ -238,14 +251,36 @@ const executeLeaveFlat = async (newAdminId: any = null) => {
     }
   };
 
+  // --- CALCULATE BALANCES ---
+  const calculateBalances = () => {
+    const balances: any = {};
+    flatMembers.forEach(m => balances[m.uid] = 0);
+
+    flatTransactions.forEach(txn => {
+      const splitCount = txn.splitAmong?.length || 1;
+      const splitAmount = txn.amount / splitCount;
+
+      // Jisne pay kiya, uska balance badhega
+      balances[txn.paidBy] = (balances[txn.paidBy] || 0) + txn.amount;
+      
+      // Jisme split hua, unka balance ghatega
+      txn.splitAmong?.forEach((uid: string) => {
+        balances[uid] = (balances[uid] || 0) - splitAmount;
+      });
+    });
+    return balances;
+  };
+
   const closeModal = () => {
     setModalType(null); setErrorMsg(""); setInputValue(""); setAddress(""); setMaxMates("4");
-    setExpenseDesc(""); setExpenseAmt(""); setExpensePaidBy("");
+    setExpenseDesc(""); setExpenseAmt(""); setSplitType("all"); setSplitAmong([]);
   };
 
   if (isLoading) return <div className="min-h-screen bg-[#F5F5F7] flex items-center justify-center"><Loader2 className="w-8 h-8 text-[#0071E3] animate-spin" /></div>;
 
   const getInitials = (name: string) => name ? name.charAt(0).toUpperCase() : "U";
+  const balances = calculateBalances();
+  const myBalance = balances[user?.uid] || 0;
 
   return (
     <div className="min-h-screen bg-[#F5F5F7] text-[#1D1D1F] font-sans pb-10 overflow-x-hidden">
@@ -357,15 +392,33 @@ const executeLeaveFlat = async (newAdminId: any = null) => {
                  </div>
                </div>
 
-               {/* RECENT TRANSACTIONS (Placeholder for now) */}
-               <div className="flex-grow flex flex-col items-center justify-center py-6 text-[#86868B] bg-gray-50 rounded-2xl border border-dashed border-gray-200">
-                 <Receipt className="w-8 h-8 text-gray-300 mb-2" />
-                 <p className="text-sm font-medium">No expenses added yet.</p>
+               {/* RECENT TRANSACTIONS */}
+               <div className="flex-grow flex flex-col bg-gray-50 rounded-2xl border border-dashed border-gray-200 p-4 overflow-y-auto max-h-[250px]">
+                 {flatTransactions.length === 0 ? (
+                    <div className="flex flex-col items-center justify-center h-full text-[#86868B] py-6">
+                      <Receipt className="w-8 h-8 text-gray-300 mb-2" />
+                      <p className="text-sm font-medium">No expenses added yet.</p>
+                    </div>
+                 ) : (
+                    <div className="space-y-3">
+                      {flatTransactions.sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime()).map((txn, i) => (
+                        <div key={i} className="flex justify-between items-center p-3 bg-white rounded-xl border border-gray-100 shadow-sm">
+                           <div>
+                             <p className="font-bold text-sm text-[#1D1D1F]">{txn.description}</p>
+                             <p className="text-xs text-gray-400 mt-0.5">
+                               {new Date(txn.date).toLocaleDateString()} • Paid by {txn.paidBy === user.uid ? "You" : flatMembers.find(m => m.uid === txn.paidBy)?.name?.split(" ")[0]}
+                             </p>
+                           </div>
+                           <p className="font-bold text-[#1D1D1F]">₹{txn.amount}</p>
+                        </div>
+                      ))}
+                    </div>
+                 )}
                </div>
                
                {/* ADD EXPENSE BUTTON */}
                <button 
-                 onClick={() => { setExpensePaidBy(user.uid); setModalType("addExpense"); }} 
+                 onClick={() => { setSplitType("all"); setSplitAmong([]); setModalType("addExpense"); }} 
                  className="mt-6 w-full bg-[#0071E3] hover:bg-[#0077ED] text-white py-3.5 rounded-xl font-semibold flex justify-center items-center gap-2 active:scale-95 transition-all shadow-sm"
                >
                  <Plus className="w-5 h-5"/> Add New Expense
@@ -373,11 +426,36 @@ const executeLeaveFlat = async (newAdminId: any = null) => {
 
             </motion.div>
 
-            {/* QUICK STATS */}
+            {/* QUICK STATS & BALANCES */}
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }} className="bg-white rounded-[24px] shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-gray-100 p-6 sm:p-8 flex flex-col">
               <div className="flex items-center gap-2 mb-4 text-[#86868B] font-medium"><Activity className="w-5 h-5" /> Net Balance</div>
-              <h3 className="text-4xl font-bold text-[#1D1D1F]">₹0</h3>
-              <p className="text-sm text-[#86868B] mt-1">You are all settled up!</p>
+              
+              <h3 className={`text-4xl font-bold ${myBalance > 0 ? "text-green-600" : myBalance < 0 ? "text-red-600" : "text-[#1D1D1F]"}`}>
+                {myBalance > 0 ? "+" : myBalance < 0 ? "-" : ""}₹{Math.abs(Math.round(myBalance))}
+              </h3>
+              <p className="text-sm text-[#86868B] mt-1 font-medium">
+                {myBalance > 0 ? "You get back overall" : myBalance < 0 ? "You owe overall" : "You are all settled up!"}
+              </p>
+
+              {/* OTHER MEMBERS BALANCES */}
+              <div className="mt-8 space-y-3 border-t border-gray-100 pt-6">
+                 <p className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-3">Group Summary</p>
+                 {flatMembers.filter(m => m.uid !== user?.uid).map(m => {
+                    const b = balances[m.uid] || 0;
+                    return (
+                       <div key={m.uid} className="flex justify-between items-center text-sm p-2 rounded-lg hover:bg-gray-50 transition-colors">
+                         <span className="font-medium text-[#1D1D1F]">{m.name?.split(" ")[0]}</span>
+                         <span className={`font-bold ${b > 0 ? "text-green-600" : b < 0 ? "text-red-600" : "text-gray-400"}`}>
+                           {b > 0 ? `Gets ₹${Math.abs(Math.round(b))}` : b < 0 ? `Owes ₹${Math.abs(Math.round(b))}` : "Settled"}
+                         </span>
+                       </div>
+                    )
+                 })}
+                 {flatMembers.length <= 1 && (
+                    <p className="text-sm text-gray-400 italic text-center py-2">Add members to see split</p>
+                 )}
+              </div>
+
             </motion.div>
           </div>
         )}
@@ -402,6 +480,7 @@ const executeLeaveFlat = async (newAdminId: any = null) => {
                       <Banknote className="w-6 h-6 text-[#34C759]" />
                     </div>
                     <h3 className="text-2xl font-bold text-[#1D1D1F]">Add Expense</h3>
+                    <p className="text-sm text-[#86868B] mt-1">Paid by you</p>
                   </div>
                   {errorMsg && <p className="bg-red-50 text-red-600 p-3 rounded-xl text-sm font-medium mb-4 border border-red-100">{errorMsg}</p>}
                   
@@ -414,16 +493,37 @@ const executeLeaveFlat = async (newAdminId: any = null) => {
                       <label className="block text-sm font-semibold text-[#86868B] mb-2 ml-1">Total Amount (₹)</label>
                       <input type="number" required min="1" value={expenseAmt} onChange={(e)=>setExpenseAmt(e.target.value)} placeholder="0.00" className="w-full bg-[#F5F5F7] text-[#1D1D1F] px-4 py-3.5 rounded-xl text-2xl font-bold outline-none border border-transparent focus:border-[#34C759] focus:bg-white transition-all" />
                     </div>
-                    <div>
-                       <label className="block text-sm font-semibold text-[#86868B] mb-2 ml-1">Who paid?</label>
-                       <select value={expensePaidBy} onChange={(e)=>setExpensePaidBy(e.target.value)} className="w-full bg-[#F5F5F7] text-[#1D1D1F] px-4 py-3.5 rounded-xl text-base outline-none border border-transparent focus:border-[#34C759] focus:bg-white transition-all appearance-none cursor-pointer">
-                          {flatMembers.map((m) => (
-                            <option key={m.uid} value={m.uid}>{m.uid === user.uid ? "You" : m.name}</option>
-                          ))}
+                    
+                    {/* DIVIDE AMONG SECTION */}
+                    <div className="pt-2">
+                       <label className="block text-sm font-semibold text-[#86868B] mb-2 ml-1">Divide among</label>
+                       <select value={splitType} onChange={(e)=> { setSplitType(e.target.value); setSplitAmong([]); }} className="w-full bg-[#F5F5F7] text-[#1D1D1F] px-4 py-3.5 rounded-xl text-base outline-none border border-transparent focus:border-[#34C759] focus:bg-white transition-all appearance-none cursor-pointer font-medium">
+                          <option value="all">Everyone in Flat</option>
+                          <option value="custom">Specific Flatmates</option>
                        </select>
+
+                       {/* CUSTOM CHECKBOX LIST */}
+                       {splitType === "custom" && (
+                         <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} className="mt-3 space-y-2 bg-[#F5F5F7] p-4 rounded-xl border border-transparent">
+                           {flatMembers.map((m) => (
+                             <label key={m.uid} className="flex items-center gap-3 cursor-pointer group">
+                               <div className={`w-5 h-5 rounded flex items-center justify-center border transition-colors ${splitAmong.includes(m.uid) ? 'bg-[#34C759] border-[#34C759]' : 'bg-white border-gray-300 group-hover:border-gray-400'}`}>
+                                 {splitAmong.includes(m.uid) && <svg className="w-3.5 h-3.5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>}
+                               </div>
+                               <input type="checkbox" className="hidden" checked={splitAmong.includes(m.uid)} onChange={(e) => {
+                                   if (e.target.checked) setSplitAmong([...splitAmong, m.uid]);
+                                   else setSplitAmong(splitAmong.filter(id => id !== m.uid));
+                                 }} 
+                               />
+                               <span className="text-sm font-medium text-[#1D1D1F]">{m.uid === user.uid ? "You" : m.name}</span>
+                             </label>
+                           ))}
+                         </motion.div>
+                       )}
                     </div>
                   </div>
-                  <button type="submit" disabled={isSubmitting || !expenseDesc || !expenseAmt} className="w-full bg-[#34C759] hover:bg-[#2EAF4E] disabled:opacity-50 text-white py-3.5 rounded-xl font-semibold flex items-center justify-center gap-2 transition-all active:scale-95 shadow-sm">
+                  
+                  <button type="submit" disabled={isSubmitting || !expenseDesc || !expenseAmt || (splitType === "custom" && splitAmong.length === 0)} className="w-full bg-[#34C759] hover:bg-[#2EAF4E] disabled:opacity-50 text-white py-3.5 rounded-xl font-semibold flex items-center justify-center gap-2 transition-all active:scale-95 shadow-sm">
                     {isSubmitting && <Loader2 className="w-5 h-5 animate-spin" />}
                     {!isSubmitting && "Save Expense"}
                   </button>
