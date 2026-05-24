@@ -1,8 +1,6 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
 
 body {
-  background-color: #F5F5F7; /* Apple's clean light grey */
+  background-color: #F5F5F7;
   color: #1D1D1F;
 }
