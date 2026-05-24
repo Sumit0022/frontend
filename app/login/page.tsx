@@ -1,10 +1,10 @@
 "use client";
 
 import { useState } from "react";
-import { auth, db } from "../../lib/firebase"; // db import kiya
+import { auth, db } from "../../lib/firebase"; 
 import { GoogleAuthProvider, signInWithPopup, sendSignInLinkToEmail } from "firebase/auth";
-import { doc, setDoc, getDoc } from "firebase/firestore"; // Firestore tools import kiye
-import { useRouter } from "next/navigation"; // Router import kiya
+import { doc, setDoc, getDoc } from "firebase/firestore"; 
+import { useRouter } from "next/navigation"; 
 import { motion } from "framer-motion";
 import { WalletCards, Mail, ChevronRight } from "lucide-react";
 
@@ -12,7 +12,7 @@ export default function LoginPage() {
   const [email, setEmail] = useState("");
   const [message, setMessage] = useState("");
   const [isLoading, setIsLoading] = useState(false);
-  const router = useRouter(); // Redirect karne ke liye
+  const router = useRouter(); 
 
   // User data ko database mein save karne ka function
   const saveUserToDatabase = async (user: any) => {
@@ -143,7 +143,13 @@ export default function LoginPage() {
             onClick={handleGoogleLogin}
             className="w-full flex items-center justify-center gap-3 bg-white border border-[#E5E5EA] text-[#1D1D1F] py-4 px-4 rounded-2xl text-[15px] font-semibold hover:bg-[#F5F5F7] transition-colors"
           >
-            <img src="https://www.svgrepo.com/show/475656/google-color.svg" alt="Google" className="w-5 h-5" />
+            {/* YAHAN FIX LAGAYA HAI */}
+            <img 
+              src="https://www.svgrepo.com/show/475656/google-color.svg" 
+              alt="Google" 
+              style={{ width: "20px", height: "20px" }} 
+              className="w-5 h-5" 
+            />
             Continue with Google
           </motion.button>
 
