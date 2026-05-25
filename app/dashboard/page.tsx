@@ -1,12 +1,21 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { auth, db, storage } from "../../lib/firebase";
+import { auth, db } from "../../lib/firebase";
 import { doc, getDoc, setDoc, updateDoc, arrayUnion, arrayRemove, collection, query, where, getDocs } from "firebase/firestore";
-import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { useRouter } from "next/navigation";
 import { LogOut, Home, Plus, Users, Activity, X, Loader2, MapPin, LocateFixed, Menu, Settings, UserMinus, History, ChevronRight, ChevronLeft, Receipt, Banknote, QrCode, Upload, CheckCircle, IndianRupee } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
+
+// Helper: File -> base64 string
+const fileToBase64 = (file: File): Promise<string> => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.readAsDataURL(file);
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = (error) => reject(error);
+  });
+};
 
 export default function Dashboard() {
   const [user, setUser] = useState<any>(null);
@@ -67,7 +76,6 @@ export default function Dashboard() {
              const memberSnaps = await Promise.all(memberPromises);
              setFlatMembers(memberSnaps.map(snap => snap.data()));
 
-             // Fetch active transactions for balances
              const q = query(collection(db, "transactions"), where("flatId", "==", uData.flatId));
              const txnsSnap = await getDocs(q);
              setFlatTransactions(txnsSnap.docs.map(d => d.data()));
@@ -259,22 +267,22 @@ export default function Dashboard() {
     }
   };
 
-  // --- SAVE PAYMENT SETTINGS ---
+  // --- SAVE PAYMENT SETTINGS (base64, no Firebase Storage) ---
   const handleSavePaymentSettings = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsSubmitting(true);
+    setErrorMsg("");
     try {
-      let qrCodeUrl = userData.qrCodeUrl || "";
+      let qrCodeUrl = userData?.qrCodeUrl || "";
       if (qrFile) {
-        const fileRef = ref(storage, `qrCodes/${user.uid}_${Date.now()}`);
-        await uploadBytes(fileRef, qrFile);
-        qrCodeUrl = await getDownloadURL(fileRef);
+        qrCodeUrl = await fileToBase64(qrFile);
       }
       await updateDoc(doc(db, "users", user.uid), { upiId, qrCodeUrl });
       await loadData(user);
       closeModal();
     } catch (error) {
-      setErrorMsg("Error saving details.");
+      console.error(error);
+      setErrorMsg("Error saving details. Please try again.");
     } finally {
       setIsSubmitting(false);
     }
@@ -298,15 +306,14 @@ export default function Dashboard() {
     }
   };
 
-  // --- SUBMIT PAYMENT PROOF ---
+  // --- SUBMIT PAYMENT PROOF (base64, no Firebase Storage) ---
   const handleSubmitPayment = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!proofFile || !settleAmount) return setErrorMsg("Proof and amount required.");
     setIsSubmitting(true);
+    setErrorMsg("");
     try {
-      const proofRef = ref(storage, `proofs/${user.uid}_${Date.now()}`);
-      await uploadBytes(proofRef, proofFile);
-      const proofUrl = await getDownloadURL(proofRef);
+      const proofBase64 = await fileToBase64(proofFile);
 
       const txnId = "stl_" + Date.now();
       await setDoc(doc(db, "transactions", txnId), {
@@ -315,7 +322,7 @@ export default function Dashboard() {
         amount: Number(settleAmount),
         from: user.uid,
         to: settleData.toUser.uid,
-        proofUrl,
+        proofUrl: proofBase64,
         date: new Date().toISOString(),
         type: "settlement",
         status: "pending"
@@ -323,7 +330,8 @@ export default function Dashboard() {
       await loadData(user);
       closeModal();
     } catch (error) {
-      setErrorMsg("Error submitting payment.");
+      console.error(error);
+      setErrorMsg("Error submitting payment. Please try again.");
     } finally {
       setIsSubmitting(false);
     }
@@ -600,7 +608,6 @@ export default function Dashboard() {
                           </span>
                           <span className="font-bold text-[#1D1D1F] mr-3">₹{Math.round(debt.amount)}</span>
                           
-                          {/* SHOW PAY BUTTON IF USER IS THE DEBTOR */}
                           {debt.from === user.uid && (
                             <button onClick={() => openSettleModal(debt)} className="bg-black text-white text-xs px-3 py-1.5 rounded-lg font-bold hover:bg-gray-800 active:scale-95 transition-all">Pay</button>
                           )}
@@ -656,7 +663,7 @@ export default function Dashboard() {
                     </div>
                   </div>
                   <button type="submit" disabled={isSubmitting} className="w-full bg-[#0071E3] hover:bg-[#0077ED] disabled:opacity-50 text-white py-3.5 rounded-xl font-semibold flex items-center justify-center gap-2 transition-all active:scale-95 shadow-sm">
-                    {isSubmitting && <Loader2 className="w-5 h-5 animate-spin" />} {!isSubmitting && "Save Details"}
+                    {isSubmitting ? <><Loader2 className="w-5 h-5 animate-spin" /> Saving...</> : "Save Details"}
                   </button>
                 </form>
               )}
@@ -689,10 +696,11 @@ export default function Dashboard() {
                         <Upload className="w-4 h-4" /> {proofFile ? proofFile.name : "Select Screenshot"}
                         <input type="file" required accept="image/*" className="hidden" onChange={(e) => setProofFile(e.target.files?.[0] || null)} />
                       </label>
+                      {proofFile && <p className="text-xs text-green-600 mt-2 font-medium ml-1">✓ {proofFile.name} selected</p>}
                     </div>
                   </div>
                   <button type="submit" disabled={isSubmitting || !proofFile} className="w-full bg-[#34C759] hover:bg-[#2EAF4E] disabled:opacity-50 text-white py-3.5 rounded-xl font-semibold flex items-center justify-center gap-2 transition-all active:scale-95 shadow-sm">
-                    {isSubmitting && <Loader2 className="w-5 h-5 animate-spin" />} {!isSubmitting && "Submit for Approval"}
+                    {isSubmitting ? <><Loader2 className="w-5 h-5 animate-spin" /> Submitting...</> : "Submit for Approval"}
                   </button>
                 </form>
               )}
@@ -717,7 +725,10 @@ export default function Dashboard() {
                              </div>
                              <p className="font-bold text-lg text-green-600">₹{txn.amount}</p>
                            </div>
-                           <a href={txn.proofUrl} target="_blank" rel="noopener noreferrer" className="text-sm text-blue-600 font-medium hover:underline mb-4 block">View Screenshot</a>
+                           {/* Show inline image preview instead of external link */}
+                           {txn.proofUrl && (
+                             <img src={txn.proofUrl} alt="Payment Screenshot" className="w-full rounded-xl border border-gray-200 mb-3 max-h-48 object-contain bg-gray-100" />
+                           )}
                            <button onClick={() => handleApprovePayment(txn.transactionId)} disabled={isSubmitting} className="w-full bg-black text-white py-2.5 rounded-xl text-sm font-bold flex justify-center gap-2 items-center hover:bg-gray-800 disabled:opacity-50 active:scale-95 transition-all">
                               {isSubmitting ? <Loader2 className="w-4 h-4 animate-spin"/> : "Approve Payment"}
                            </button>
@@ -750,7 +761,6 @@ export default function Dashboard() {
                       <input type="number" required min="1" value={expenseAmt} onChange={(e)=>setExpenseAmt(e.target.value)} placeholder="0.00" className="w-full bg-[#F5F5F7] text-[#1D1D1F] px-4 py-3.5 rounded-xl text-2xl font-bold outline-none border border-transparent focus:border-[#34C759] focus:bg-white transition-all" />
                     </div>
                     
-                    {/* DIVIDE AMONG SECTION */}
                     <div className="pt-2">
                        <label className="block text-sm font-semibold text-[#86868B] mb-2 ml-1">Divide among</label>
                        <select value={splitType} onChange={(e)=> { setSplitType(e.target.value); setSplitAmong([]); }} className="w-full bg-[#F5F5F7] text-[#1D1D1F] px-4 py-3.5 rounded-xl text-base outline-none border border-transparent focus:border-[#34C759] focus:bg-white transition-all appearance-none cursor-pointer font-medium">
@@ -758,7 +768,6 @@ export default function Dashboard() {
                           <option value="custom">Specific Flatmates</option>
                        </select>
 
-                       {/* CUSTOM CHECKBOX LIST */}
                        {splitType === "custom" && (
                          <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} className="mt-3 space-y-2 bg-[#F5F5F7] p-4 rounded-xl border border-transparent">
                            {flatMembers.map((m) => (
