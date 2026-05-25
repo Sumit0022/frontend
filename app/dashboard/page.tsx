@@ -410,111 +410,98 @@ export default function Dashboard() {
     document.body.removeChild(link);
   };
 
-  // --- FIX: DOWNLOAD BEAUTIFUL PDF (Mobile Friendly Hidden Iframe) ---
+ // --- FIX: DOWNLOAD BEAUTIFUL PDF (Mobile Friendly Native Print) ---
   const handleDownloadPDF = () => {
     const totalVolume = filteredTransactions.reduce((acc, curr) => acc + curr.amount, 0);
 
-    const htmlContent = `
-      <html>
-        <head>
-          <title>${flatData?.flatName} - Ledger Report</title>
-          <style>
-            @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
-            body { font-family: 'Inter', sans-serif; color: #1D1D1F; padding: 40px; margin: 0; }
-            .header { text-align: center; border-bottom: 2px solid #F5F5F7; padding-bottom: 20px; margin-bottom: 30px; }
-            .header h1 { margin: 0; font-size: 32px; color: #0071E3; letter-spacing: -1px; }
-            .header p { margin: 5px 0 0 0; color: #86868B; font-size: 14px; }
-            .summary { display: flex; justify-content: space-around; background: #F5F5F7; padding: 20px; border-radius: 16px; margin-bottom: 30px; }
-            .summary-box { text-align: center; }
-            .summary-box h4 { margin: 0 0 5px 0; font-size: 12px; color: #86868B; text-transform: uppercase; letter-spacing: 1px; }
-            .summary-box p { margin: 0; font-size: 24px; font-weight: 700; color: #1D1D1F; }
-            table { width: 100%; border-collapse: collapse; margin-top: 10px; }
-            th, td { padding: 14px 15px; text-align: left; border-bottom: 1px solid #E5E5EA; }
-            th { background-color: #F5F5F7; font-weight: 600; font-size: 13px; color: #86868B; text-transform: uppercase; letter-spacing: 0.5px; }
-            td { font-size: 14px; color: #1D1D1F; }
-            .type-expense { font-weight: 600; }
-            .type-settle { color: #34C759; font-weight: 600; }
-            .status-pending { background: #FEF08A; color: #9A3412; padding: 3px 8px; border-radius: 12px; font-size: 11px; font-weight: bold; }
-            @media print {
-              body { padding: 0; }
-              .header { margin-top: 20px; }
-            }
-          </style>
-        </head>
-        <body>
-          <div class="header">
-            <h1>${flatData?.flatName}</h1>
-            <p>Official Transaction Ledger • Generated on ${new Date().toLocaleDateString()}</p>
+    const printContent = `
+      <div style="font-family: 'Inter', sans-serif; color: #1D1D1F; padding: 20px; background: white; min-height: 100vh;">
+        <div style="text-align: center; border-bottom: 2px solid #F5F5F7; padding-bottom: 20px; margin-bottom: 30px;">
+          <h1 style="margin: 0; font-size: 32px; color: #0071E3;">${flatData?.flatName || 'Flatmate Ledger'}</h1>
+          <p style="margin: 5px 0 0 0; color: #86868B; font-size: 14px;">Official Transaction Ledger • Generated on ${new Date().toLocaleDateString()}</p>
+        </div>
+        
+        <div style="display: flex; justify-content: space-around; background: #F5F5F7; padding: 20px; border-radius: 16px; margin-bottom: 30px;">
+          <div style="text-align: center;">
+            <h4 style="margin: 0 0 5px 0; font-size: 12px; color: #86868B; text-transform: uppercase;">Filtered Records</h4>
+            <p style="margin: 0; font-size: 24px; font-weight: 700; color: #1D1D1F;">${filteredTransactions.length}</p>
           </div>
-          
-          <div class="summary">
-            <div class="summary-box">
-              <h4>Filtered Records</h4>
-              <p>${filteredTransactions.length}</p>
-            </div>
-            <div class="summary-box">
-              <h4>Total Volume</h4>
-              <p>₹${totalVolume.toLocaleString()}</p>
-            </div>
+          <div style="text-align: center;">
+            <h4 style="margin: 0 0 5px 0; font-size: 12px; color: #86868B; text-transform: uppercase;">Total Volume</h4>
+            <p style="margin: 0; font-size: 24px; font-weight: 700; color: #1D1D1F;">₹${totalVolume.toLocaleString()}</p>
           </div>
+        </div>
 
-          <table>
-            <thead>
-              <tr>
-                <th>Date</th>
-                <th>Description</th>
-                <th>Paid By</th>
-                <th>Amount</th>
-                <th>Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${filteredTransactions.map(txn => {
-                const date = new Date(txn.date).toLocaleDateString();
-                const desc = txn.type === 'settlement' ? 'Payment Settlement' : txn.description;
-                const fromUid = txn.type === 'settlement' ? txn.from : txn.paidBy;
-                const fromName = flatMembers.find(m => m.uid === fromUid)?.name || 'Unknown';
-                const amtClass = txn.type === 'settlement' ? 'type-settle' : 'type-expense';
-                const statusBadge = (txn.type === 'settlement' && txn.status === 'pending') ? '<span class="status-pending">PENDING</span>' : 'Completed';
-                
-                return `
-                  <tr>
-                    <td>${date}</td>
-                    <td>${desc}</td>
-                    <td>${fromName}</td>
-                    <td class="${amtClass}">₹${txn.amount.toLocaleString()}</td>
-                    <td>${statusBadge}</td>
-                  </tr>
-                `;
-              }).join('')}
-            </tbody>
-          </table>
-        </body>
-      </html>
+        <table style="width: 100%; border-collapse: collapse; margin-top: 10px;">
+          <thead>
+            <tr>
+              <th style="padding: 14px 15px; text-align: left; border-bottom: 1px solid #E5E5EA; background-color: #F5F5F7; font-weight: 600; font-size: 13px; color: #86868B; text-transform: uppercase;">Date</th>
+              <th style="padding: 14px 15px; text-align: left; border-bottom: 1px solid #E5E5EA; background-color: #F5F5F7; font-weight: 600; font-size: 13px; color: #86868B; text-transform: uppercase;">Description</th>
+              <th style="padding: 14px 15px; text-align: left; border-bottom: 1px solid #E5E5EA; background-color: #F5F5F7; font-weight: 600; font-size: 13px; color: #86868B; text-transform: uppercase;">Paid By</th>
+              <th style="padding: 14px 15px; text-align: left; border-bottom: 1px solid #E5E5EA; background-color: #F5F5F7; font-weight: 600; font-size: 13px; color: #86868B; text-transform: uppercase;">Amount</th>
+              <th style="padding: 14px 15px; text-align: left; border-bottom: 1px solid #E5E5EA; background-color: #F5F5F7; font-weight: 600; font-size: 13px; color: #86868B; text-transform: uppercase;">Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${filteredTransactions.map(txn => {
+              const date = new Date(txn.date).toLocaleDateString();
+              const desc = txn.type === 'settlement' ? 'Payment Settlement' : txn.description;
+              const fromUid = txn.type === 'settlement' ? txn.from : txn.paidBy;
+              const fromName = flatMembers.find(m => m.uid === fromUid)?.name || 'Unknown';
+              const amtColor = txn.type === 'settlement' ? '#34C759' : '#1D1D1F';
+              const statusText = (txn.type === 'settlement' && txn.status === 'pending') ? 'PENDING' : 'Completed';
+              const statusColor = (txn.type === 'settlement' && txn.status === 'pending') ? '#9A3412' : '#86868B';
+              
+              return `
+                <tr>
+                  <td style="padding: 14px 15px; text-align: left; border-bottom: 1px solid #E5E5EA; font-size: 14px;">${date}</td>
+                  <td style="padding: 14px 15px; text-align: left; border-bottom: 1px solid #E5E5EA; font-size: 14px;">${desc}</td>
+                  <td style="padding: 14px 15px; text-align: left; border-bottom: 1px solid #E5E5EA; font-size: 14px;">${fromName}</td>
+                  <td style="padding: 14px 15px; text-align: left; border-bottom: 1px solid #E5E5EA; font-size: 14px; font-weight: 600; color: ${amtColor};">₹${txn.amount.toLocaleString()}</td>
+                  <td style="padding: 14px 15px; text-align: left; border-bottom: 1px solid #E5E5EA; font-size: 12px; font-weight: bold; color: ${statusColor};">${statusText}</td>
+                </tr>
+              `;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
     `;
 
-    // Hidden iframe trick for reliable mobile printing
-    const iframe = document.createElement('iframe');
-    iframe.style.position = 'fixed';
-    iframe.style.width = '0px';
-    iframe.style.height = '0px';
-    iframe.style.border = 'none';
-    document.body.appendChild(iframe);
+    // 1. Remove old instances if any
+    const existingContainer = document.getElementById('pdf-print-container');
+    if (existingContainer) existingContainer.remove();
+    const existingStyle = document.getElementById('pdf-print-style');
+    if (existingStyle) existingStyle.remove();
 
-    const doc = iframe.contentWindow?.document;
-    if (doc) {
-      doc.open();
-      doc.write(htmlContent);
-      doc.close();
+    // 2. Create Print Container
+    const printContainer = document.createElement('div');
+    printContainer.id = 'pdf-print-container';
+    printContainer.innerHTML = printContent;
+    document.body.appendChild(printContainer);
 
-      setTimeout(() => {
-        iframe.contentWindow?.focus();
-        iframe.contentWindow?.print();
-        setTimeout(() => {
-          document.body.removeChild(iframe);
-        }, 2000);
-      }, 500);
-    }
+    // 3. Inject Print CSS (Hides everything else on the screen ONLY during print)
+    const style = document.createElement('style');
+    style.id = 'pdf-print-style';
+    style.innerHTML = `
+      @media print {
+        body > *:not(#pdf-print-container) { display: none !important; }
+        #pdf-print-container { display: block !important; position: absolute; left: 0; top: 0; width: 100%; background: white; z-index: 99999; }
+      }
+      @media screen {
+        #pdf-print-container { display: none !important; }
+      }
+    `;
+    document.head.appendChild(style);
+
+    // 4. Call Print Dialog
+    window.print();
+
+    // 5. Cleanup DOM *ONLY* after the print dialog is closed
+    window.onafterprint = () => {
+      document.getElementById('pdf-print-container')?.remove();
+      document.getElementById('pdf-print-style')?.remove();
+      window.onafterprint = null; // reset listener
+    };
   };
 
   // --- SAVE PAYMENT SETTINGS (base64) ---
