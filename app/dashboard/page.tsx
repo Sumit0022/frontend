@@ -2,9 +2,9 @@
 
 import { useEffect, useState } from "react";
 import { auth, db } from "../../lib/firebase";
-import { doc, getDoc, setDoc, updateDoc, arrayUnion, arrayRemove, collection, query, where, getDocs } from "firebase/firestore";
+import { doc, getDoc, setDoc, updateDoc, deleteDoc, arrayUnion, arrayRemove, collection, query, where, getDocs } from "firebase/firestore";
 import { useRouter } from "next/navigation";
-import { LogOut, Home, Plus, Users, Activity, X, Loader2, MapPin, LocateFixed, Menu, Settings, UserMinus, History, ChevronRight, ChevronLeft, Receipt, Banknote, QrCode, Upload, CheckCircle, IndianRupee } from "lucide-react";
+import { LogOut, Home, Plus, Users, Activity, X, Loader2, MapPin, LocateFixed, Menu, Settings, UserMinus, History, ChevronRight, ChevronLeft, Receipt, Banknote, QrCode, Upload, CheckCircle, Trash2, Edit2, Download, FileText, Search, Filter } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 
 // Helper: File -> base64 string
@@ -27,7 +27,7 @@ export default function Dashboard() {
   
   // UI States
   const [isMenuOpen, setIsMenuOpen] = useState(false);
-  const [modalType, setModalType] = useState<"create" | "join" | "leaveConfirm" | "transferAdmin" | "pastFlats" | "editFlat" | "pastFlatHistory" | "addExpense" | "paymentSettings" | "initiatePayment" | "approvals" | null>(null);
+  const [modalType, setModalType] = useState<"create" | "join" | "leaveConfirm" | "transferAdmin" | "pastFlats" | "editFlat" | "pastFlatHistory" | "addExpense" | "paymentSettings" | "initiatePayment" | "approvals" | "ledger" | null>(null);
   
   // Form States
   const [inputValue, setInputValue] = useState("");
@@ -37,11 +37,12 @@ export default function Dashboard() {
   const [errorMsg, setErrorMsg] = useState("");
   const [isFetchingLoc, setIsFetchingLoc] = useState(false);
   
-  // Add Expense States
+  // Add/Edit Expense States
   const [expenseDesc, setExpenseDesc] = useState("");
   const [expenseAmt, setExpenseAmt] = useState("");
   const [splitType, setSplitType] = useState("all"); 
   const [splitAmong, setSplitAmong] = useState<string[]>([]); 
+  const [editingTxnId, setEditingTxnId] = useState<string | null>(null);
 
   // Payment & Settlement States
   const [upiId, setUpiId] = useState("");
@@ -55,6 +56,12 @@ export default function Dashboard() {
   const [selectedNewAdmin, setSelectedNewAdmin] = useState("");
   const [selectedPastFlat, setSelectedPastFlat] = useState<any>(null);
   const [pastTransactions, setPastTransactions] = useState<any[]>([]);
+
+  // Advanced Ledger Filter States
+  const [filterSearch, setFilterSearch] = useState("");
+  const [filterDateFrom, setFilterDateFrom] = useState("");
+  const [filterDateTo, setFilterDateTo] = useState("");
+  const [filterPaidBy, setFilterPaidBy] = useState("all");
 
   const router = useRouter();
 
@@ -232,7 +239,35 @@ export default function Dashboard() {
     }
   };
 
-  // --- ADD EXPENSE LOGIC ---
+  // --- DELETE & EDIT TRANSACTION LOGIC ---
+  const handleDeleteTransaction = async (txnId: string) => {
+    if (!confirm("Are you sure you want to delete this? This action cannot be undone.")) return;
+    setIsLoading(true);
+    try {
+      await deleteDoc(doc(db, "transactions", txnId));
+      await loadData(user);
+    } catch (e) {
+      console.error("Failed to delete transaction", e);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const openEditTransaction = (txn: any) => {
+    setExpenseDesc(txn.description);
+    setExpenseAmt(txn.amount.toString());
+    if (txn.splitAmong?.length === flatMembers.length) {
+      setSplitType("all");
+      setSplitAmong([]);
+    } else {
+      setSplitType("custom");
+      setSplitAmong(txn.splitAmong || []);
+    }
+    setEditingTxnId(txn.transactionId);
+    setModalType("addExpense");
+  };
+
+  // --- ADD / UPDATE EXPENSE LOGIC ---
   const handleAddExpense = async (e: React.FormEvent) => {
     e.preventDefault();
     const finalSplit = splitType === "all" ? flatMembers.map(m => m.uid) : splitAmong;
@@ -246,28 +281,186 @@ export default function Dashboard() {
     setErrorMsg("");
 
     try {
-      const txnId = "txn_" + Date.now(); 
-      await setDoc(doc(db, "transactions", txnId), {
-        transactionId: txnId,
-        flatId: userData.flatId,
-        description: expenseDesc,
-        amount: Number(expenseAmt),
-        paidBy: user.uid,
-        splitAmong: finalSplit, 
-        date: new Date().toISOString(),
-        type: "expense"
-      });
+      if (editingTxnId) {
+        await updateDoc(doc(db, "transactions", editingTxnId), {
+          description: expenseDesc,
+          amount: Number(expenseAmt),
+          splitAmong: finalSplit,
+        });
+      } else {
+        const txnId = "txn_" + Date.now(); 
+        await setDoc(doc(db, "transactions", txnId), {
+          transactionId: txnId,
+          flatId: userData.flatId,
+          description: expenseDesc,
+          amount: Number(expenseAmt),
+          paidBy: user.uid,
+          splitAmong: finalSplit, 
+          date: new Date().toISOString(),
+          type: "expense"
+        });
+      }
       await loadData(user); 
       closeModal();
     } catch (error) {
-      setErrorMsg("Error adding expense.");
+      setErrorMsg("Error saving expense.");
       console.error(error);
     } finally {
       setIsSubmitting(false);
     }
   };
 
-  // --- SAVE PAYMENT SETTINGS (base64, no Firebase Storage) ---
+  // --- LEDGER FILTERING LOGIC ---
+  const sortedTransactions = [...flatTransactions].sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  
+  const filteredTransactions = sortedTransactions.filter(txn => {
+    const matchSearch = filterSearch ? (txn.description?.toLowerCase().includes(filterSearch.toLowerCase()) || false) : true;
+    
+    let matchDateFrom = true;
+    if (filterDateFrom) {
+      matchDateFrom = new Date(txn.date) >= new Date(filterDateFrom);
+    }
+    
+    let matchDateTo = true;
+    if (filterDateTo) {
+      const toDate = new Date(filterDateTo);
+      toDate.setHours(23, 59, 59, 999);
+      matchDateTo = new Date(txn.date) <= toDate;
+    }
+    
+    let matchPaidBy = true;
+    if (filterPaidBy !== "all") {
+       const actualPaidBy = txn.type === 'settlement' ? txn.from : txn.paidBy;
+       matchPaidBy = actualPaidBy === filterPaidBy;
+    }
+
+    return matchSearch && matchDateFrom && matchDateTo && matchPaidBy;
+  });
+
+  // --- DOWNLOAD REPORT (CSV) ---
+  const handleDownloadReport = () => {
+    const headers = ["Date", "Description", "Type", "Amount (INR)", "Paid By / Sender", "To / Split", "Status"];
+    
+    const rows = filteredTransactions.map(txn => {
+      const date = new Date(txn.date).toLocaleDateString();
+      const desc = txn.type === 'settlement' ? 'Settlement' : txn.description;
+      const type = txn.type;
+      const amt = txn.amount;
+      const from = flatMembers.find(m => m.uid === (txn.type === 'settlement' ? txn.from : txn.paidBy))?.name || 'Unknown';
+      const to = txn.type === 'settlement' 
+          ? (flatMembers.find(m => m.uid === txn.to)?.name || 'Unknown') 
+          : (txn.splitAmong?.length === flatMembers.length ? "Everyone" : `${txn.splitAmong?.length} members`);
+      const status = txn.status || 'Completed';
+      
+      return `"${date}","${desc}","${type}","${amt}","${from}","${to}","${status}"`;
+    });
+
+    const csvContent = [headers.join(","), ...rows].join("\n");
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.setAttribute("href", url);
+    link.setAttribute("download", `${flatData?.flatName || "Flat"}_Filtered_Ledger.csv`);
+    link.style.visibility = "hidden";
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  // --- DOWNLOAD BEAUTIFUL PDF ---
+  const handleDownloadPDF = () => {
+    const printWindow = window.open('', '_blank');
+    if (!printWindow) return alert("Please allow pop-ups to generate the PDF report.");
+
+    const totalVolume = filteredTransactions.reduce((acc, curr) => acc + curr.amount, 0);
+
+    const htmlContent = `
+      <html>
+        <head>
+          <title>${flatData?.flatName} - Ledger Report</title>
+          <style>
+            @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
+            body { font-family: 'Inter', sans-serif; color: #1D1D1F; padding: 40px; margin: 0; }
+            .header { text-align: center; border-bottom: 2px solid #F5F5F7; padding-bottom: 20px; margin-bottom: 30px; }
+            .header h1 { margin: 0; font-size: 32px; color: #0071E3; letter-spacing: -1px; }
+            .header p { margin: 5px 0 0 0; color: #86868B; font-size: 14px; }
+            .summary { display: flex; justify-content: space-around; background: #F5F5F7; padding: 20px; border-radius: 16px; margin-bottom: 30px; }
+            .summary-box { text-align: center; }
+            .summary-box h4 { margin: 0 0 5px 0; font-size: 12px; color: #86868B; text-transform: uppercase; letter-spacing: 1px; }
+            .summary-box p { margin: 0; font-size: 24px; font-weight: 700; color: #1D1D1F; }
+            table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+            th, td { padding: 14px 15px; text-align: left; border-bottom: 1px solid #E5E5EA; }
+            th { background-color: #F5F5F7; font-weight: 600; font-size: 13px; color: #86868B; text-transform: uppercase; letter-spacing: 0.5px; }
+            td { font-size: 14px; color: #1D1D1F; }
+            .type-expense { font-weight: 600; }
+            .type-settle { color: #34C759; font-weight: 600; }
+            .status-pending { background: #FEF08A; color: #9A3412; padding: 3px 8px; border-radius: 12px; font-size: 11px; font-weight: bold; }
+            @media print {
+              body { padding: 0; }
+              .header { margin-top: 20px; }
+            }
+          </style>
+        </head>
+        <body>
+          <div class="header">
+            <h1>${flatData?.flatName}</h1>
+            <p>Official Transaction Ledger • Generated on ${new Date().toLocaleDateString()}</p>
+          </div>
+          
+          <div class="summary">
+            <div class="summary-box">
+              <h4>Filtered Records</h4>
+              <p>${filteredTransactions.length}</p>
+            </div>
+            <div class="summary-box">
+              <h4>Total Volume</h4>
+              <p>₹${totalVolume.toLocaleString()}</p>
+            </div>
+          </div>
+
+          <table>
+            <thead>
+              <tr>
+                <th>Date</th>
+                <th>Description</th>
+                <th>Paid By</th>
+                <th>Amount</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${filteredTransactions.map(txn => {
+                const date = new Date(txn.date).toLocaleDateString();
+                const desc = txn.type === 'settlement' ? 'Payment Settlement' : txn.description;
+                const fromUid = txn.type === 'settlement' ? txn.from : txn.paidBy;
+                const fromName = flatMembers.find(m => m.uid === fromUid)?.name || 'Unknown';
+                const amtClass = txn.type === 'settlement' ? 'type-settle' : 'type-expense';
+                const statusBadge = (txn.type === 'settlement' && txn.status === 'pending') ? '<span class="status-pending">PENDING</span>' : 'Completed';
+                
+                return `
+                  <tr>
+                    <td>${date}</td>
+                    <td>${desc}</td>
+                    <td>${fromName}</td>
+                    <td class="${amtClass}">₹${txn.amount.toLocaleString()}</td>
+                    <td>${statusBadge}</td>
+                  </tr>
+                `;
+              }).join('')}
+            </tbody>
+          </table>
+          
+          <script>
+            window.onload = function() { setTimeout(() => { window.print(); window.close(); }, 500); }
+          </script>
+        </body>
+      </html>
+    `;
+    printWindow.document.write(htmlContent);
+    printWindow.document.close();
+  };
+
+  // --- SAVE PAYMENT SETTINGS (base64) ---
   const handleSavePaymentSettings = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsSubmitting(true);
@@ -306,7 +499,7 @@ export default function Dashboard() {
     }
   };
 
-  // --- SUBMIT PAYMENT PROOF (base64, no Firebase Storage) ---
+  // --- SUBMIT PAYMENT PROOF (base64) ---
   const handleSubmitPayment = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!proofFile || !settleAmount) return setErrorMsg("Proof and amount required.");
@@ -409,6 +602,8 @@ export default function Dashboard() {
     setModalType(null); setErrorMsg(""); setInputValue(""); setAddress(""); setMaxMates("4");
     setExpenseDesc(""); setExpenseAmt(""); setSplitType("all"); setSplitAmong([]);
     setUpiId(""); setQrFile(null); setSettleData(null); setSettleAmount(""); setProofFile(null);
+    setEditingTxnId(null);
+    setFilterSearch(""); setFilterDateFrom(""); setFilterDateTo(""); setFilterPaidBy("all");
   };
 
   if (isLoading) return <div className="min-h-screen bg-[#F5F5F7] flex items-center justify-center"><Loader2 className="w-8 h-8 text-[#0071E3] animate-spin" /></div>;
@@ -419,6 +614,38 @@ export default function Dashboard() {
   const myBalance = balances[user?.uid] || 0;
   const detailedDebts = calculateDetailedDebts(balances);
   const pendingApprovals = flatTransactions.filter(t => t.type === "settlement" && t.status === "pending" && t.to === user.uid);
+  
+  // REUSABLE TRANSACTION ITEM COMPONENT
+  const TransactionItem = ({ txn }: { txn: any }) => (
+    <div className="flex justify-between items-center p-3 bg-white rounded-xl border border-gray-100 shadow-sm group">
+      <div className="flex-1">
+        <p className="font-bold text-sm text-[#1D1D1F]">
+          {txn.type === "settlement" ? "Payment Settlement" : txn.description}
+          {txn.type === "settlement" && txn.status === "pending" && <span className="ml-2 text-[10px] bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded-full">Pending</span>}
+        </p>
+        <p className="text-xs text-gray-400 mt-0.5">
+          {new Date(txn.date).toLocaleDateString()} • {txn.type === "settlement" ? `From ${txn.from === user.uid ? "You" : flatMembers.find(m=>m.uid===txn.from)?.name?.split(" ")[0]}` : `Paid by ${txn.paidBy === user.uid ? "You" : flatMembers.find(m => m.uid === txn.paidBy)?.name?.split(" ")[0]}`}
+        </p>
+      </div>
+      <div className="flex items-center gap-3">
+        <p className={`font-bold ${txn.type === "settlement" ? "text-green-600" : "text-[#1D1D1F]"}`}>₹{txn.amount}</p>
+        
+        {/* EDIT & DELETE ACTIONS */}
+        {txn.type === "expense" && txn.paidBy === user.uid && (
+          <div className="flex items-center gap-1 opacity-40 hover:opacity-100 transition-opacity">
+            <button onClick={() => openEditTransaction(txn)} className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"><Edit2 className="w-3.5 h-3.5"/></button>
+            <button onClick={() => handleDeleteTransaction(txn.transactionId)} className="p-1.5 text-red-600 hover:bg-red-50 rounded-lg transition-colors"><Trash2 className="w-3.5 h-3.5"/></button>
+          </div>
+        )}
+        {/* Allow deleting pending settlements for sender */}
+        {txn.type === "settlement" && txn.status === "pending" && txn.from === user.uid && (
+          <div className="flex items-center gap-1 opacity-40 hover:opacity-100 transition-opacity">
+            <button onClick={() => handleDeleteTransaction(txn.transactionId)} className="p-1.5 text-red-600 hover:bg-red-50 rounded-lg transition-colors"><Trash2 className="w-3.5 h-3.5"/></button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
 
   return (
     <div className="min-h-screen bg-[#F5F5F7] text-[#1D1D1F] font-sans pb-10 overflow-x-hidden">
@@ -540,36 +767,32 @@ export default function Dashboard() {
                  </div>
                </div>
 
-               {/* RECENT TRANSACTIONS */}
-               <div className="flex-grow flex flex-col bg-gray-50 rounded-2xl border border-dashed border-gray-200 p-4 overflow-y-auto max-h-[250px]">
-                 {flatTransactions.length === 0 ? (
+               {/* RECENT TRANSACTIONS (Top 4 only) */}
+               <div className="flex-grow flex flex-col bg-gray-50 rounded-2xl border border-dashed border-gray-200 p-4">
+                 {sortedTransactions.length === 0 ? (
                     <div className="flex flex-col items-center justify-center h-full text-[#86868B] py-6">
                       <Receipt className="w-8 h-8 text-gray-300 mb-2" />
                       <p className="text-sm font-medium">No activity yet.</p>
                     </div>
                  ) : (
                     <div className="space-y-3">
-                      {flatTransactions.sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime()).map((txn, i) => (
-                        <div key={i} className="flex justify-between items-center p-3 bg-white rounded-xl border border-gray-100 shadow-sm">
-                           <div>
-                             <p className="font-bold text-sm text-[#1D1D1F]">
-                               {txn.type === "settlement" ? "Payment Settlement" : txn.description}
-                               {txn.type === "settlement" && txn.status === "pending" && <span className="ml-2 text-[10px] bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded-full">Pending</span>}
-                             </p>
-                             <p className="text-xs text-gray-400 mt-0.5">
-                               {new Date(txn.date).toLocaleDateString()} • {txn.type === "settlement" ? `From ${txn.from === user.uid ? "You" : flatMembers.find(m=>m.uid===txn.from)?.name?.split(" ")[0]}` : `Paid by ${txn.paidBy === user.uid ? "You" : flatMembers.find(m => m.uid === txn.paidBy)?.name?.split(" ")[0]}`}
-                             </p>
-                           </div>
-                           <p className={`font-bold ${txn.type === "settlement" ? "text-green-600" : "text-[#1D1D1F]"}`}>₹{txn.amount}</p>
-                        </div>
+                      {sortedTransactions.slice(0, 4).map((txn, i) => (
+                        <TransactionItem key={txn.transactionId || i} txn={txn} />
                       ))}
+                      
+                      {/* VIEW ALL / FULL LEDGER BUTTON */}
+                      {sortedTransactions.length > 4 && (
+                        <button onClick={() => setModalType("ledger")} className="w-full text-center text-sm font-bold text-[#0071E3] py-2 hover:bg-blue-50 rounded-xl transition-colors">
+                          View Full Ledger ({sortedTransactions.length} entries)
+                        </button>
+                      )}
                     </div>
                  )}
                </div>
                
                {/* ADD EXPENSE BUTTON */}
                <button 
-                 onClick={() => { setSplitType("all"); setSplitAmong([]); setModalType("addExpense"); }} 
+                 onClick={() => { setEditingTxnId(null); setSplitType("all"); setSplitAmong([]); setModalType("addExpense"); }} 
                  className="mt-6 w-full bg-[#0071E3] hover:bg-[#0077ED] text-white py-3.5 rounded-xl font-semibold flex justify-center items-center gap-2 active:scale-95 transition-all shadow-sm"
                >
                  <Plus className="w-5 h-5"/> Add New Expense
@@ -608,6 +831,7 @@ export default function Dashboard() {
                           </span>
                           <span className="font-bold text-[#1D1D1F] mr-3">₹{Math.round(debt.amount)}</span>
                           
+                          {/* SHOW PAY BUTTON IF USER IS THE DEBTOR */}
                           {debt.from === user.uid && (
                             <button onClick={() => openSettleModal(debt)} className="bg-black text-white text-xs px-3 py-1.5 rounded-lg font-bold hover:bg-gray-800 active:scale-95 transition-all">Pay</button>
                           )}
@@ -631,14 +855,68 @@ export default function Dashboard() {
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={closeModal} className="absolute inset-0 bg-black/30 backdrop-blur-sm" />
             
-            <motion.div initial={{ opacity: 0, scale: 0.95, y: 10 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.95, y: 10 }} className="bg-white w-full max-w-md rounded-[24px] shadow-2xl relative z-10 p-6 sm:p-8 overflow-hidden max-h-[90vh] overflow-y-auto">
-              {modalType !== "pastFlatHistory" && modalType !== "initiatePayment" && (
+            <motion.div initial={{ opacity: 0, scale: 0.95, y: 10 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.95, y: 10 }} className={`bg-white w-full ${modalType === 'ledger' ? 'max-w-2xl' : 'max-w-md'} rounded-[24px] shadow-2xl relative z-10 p-6 sm:p-8 overflow-hidden max-h-[90vh] flex flex-col`}>
+              {modalType !== "pastFlatHistory" && modalType !== "initiatePayment" && modalType !== "ledger" && (
                 <button onClick={closeModal} className="absolute top-6 right-6 p-2 bg-[#F5F5F7] hover:bg-gray-200 rounded-full transition-colors active:scale-95"><X className="w-5 h-5 text-[#86868B]" /></button>
+              )}
+
+              {/* FULL LEDGER & ADVANCED FILTERS MODAL */}
+              {modalType === "ledger" && (
+                <div className="flex flex-col h-full max-h-[75vh]">
+                  <div className="flex justify-between items-center mb-4">
+                    <h3 className="text-2xl font-bold text-[#1D1D1F]">Full Ledger</h3>
+                    <div className="flex gap-2">
+                       <button onClick={handleDownloadReport} title="Download CSV Data" className="text-[#0071E3] bg-[#0071E3]/10 hover:bg-[#0071E3]/20 px-3 py-1.5 rounded-lg font-bold text-sm flex items-center gap-1.5 transition-colors"><Download className="w-4 h-4"/> CSV</button>
+                       <button onClick={handleDownloadPDF} title="Download PDF Report" className="text-red-600 bg-red-100 hover:bg-red-200 px-3 py-1.5 rounded-lg font-bold text-sm flex items-center gap-1.5 transition-colors"><FileText className="w-4 h-4"/> PDF</button>
+                       <button onClick={closeModal} className="p-1.5 bg-[#F5F5F7] hover:bg-gray-200 rounded-full transition-colors"><X className="w-5 h-5 text-[#86868B]" /></button>
+                    </div>
+                  </div>
+                  
+                  {/* FILTERS BAR */}
+                  <div className="bg-[#F5F5F7] p-4 rounded-xl mb-4 space-y-3 shrink-0">
+                    <div className="flex gap-3 items-center">
+                      <div className="relative flex-1">
+                        <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"/>
+                        <input type="text" placeholder="Search description..." value={filterSearch} onChange={e=>setFilterSearch(e.target.value)} className="w-full pl-9 pr-3 py-2 bg-white border border-transparent focus:border-[#0071E3] rounded-lg text-sm outline-none transition-colors" />
+                      </div>
+                      <select value={filterPaidBy} onChange={e=>setFilterPaidBy(e.target.value)} className="bg-white border border-transparent focus:border-[#0071E3] rounded-lg px-3 py-2 text-sm outline-none cursor-pointer transition-colors">
+                        <option value="all">All Members</option>
+                        {flatMembers.map(m => <option key={m.uid} value={m.uid}>{m.uid === user.uid ? "You" : m.name?.split(" ")[0]}</option>)}
+                      </select>
+                    </div>
+                    <div className="flex gap-3 items-center">
+                      <div className="flex-1 flex items-center gap-2">
+                        <span className="text-xs text-gray-500 font-bold w-10">FROM</span>
+                        <input type="date" value={filterDateFrom} onChange={e=>setFilterDateFrom(e.target.value)} className="w-full bg-white border border-transparent focus:border-[#0071E3] rounded-lg px-3 py-2 text-sm outline-none" />
+                      </div>
+                      <div className="flex-1 flex items-center gap-2">
+                        <span className="text-xs text-gray-500 font-bold w-10">TO</span>
+                        <input type="date" value={filterDateTo} onChange={e=>setFilterDateTo(e.target.value)} className="w-full bg-white border border-transparent focus:border-[#0071E3] rounded-lg px-3 py-2 text-sm outline-none" />
+                      </div>
+                    </div>
+                    {/* Clear Filters Button */}
+                    {(filterSearch || filterDateFrom || filterDateTo || filterPaidBy !== "all") && (
+                      <div className="text-right">
+                        <button onClick={()=>{setFilterSearch(""); setFilterDateFrom(""); setFilterDateTo(""); setFilterPaidBy("all");}} className="text-xs text-red-500 font-bold hover:underline transition-all">Clear Filters</button>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="flex-grow overflow-y-auto space-y-3 pr-2 custom-scrollbar">
+                     {filteredTransactions.length === 0 ? (
+                       <p className="text-center text-gray-500 py-6 text-sm font-medium">No transactions match your filters.</p>
+                     ) : (
+                       filteredTransactions.map((txn, i) => (
+                         <TransactionItem key={txn.transactionId || i} txn={txn} />
+                       ))
+                     )}
+                  </div>
+                </div>
               )}
 
               {/* PAYMENT SETTINGS MODAL */}
               {modalType === "paymentSettings" && (
-                <form onSubmit={handleSavePaymentSettings}>
+                <form onSubmit={handleSavePaymentSettings} className="overflow-y-auto pr-2">
                   <div className="mb-6">
                     <div className="w-12 h-12 bg-[#0071E3]/10 rounded-2xl flex items-center justify-center mb-4">
                       <QrCode className="w-6 h-6 text-[#0071E3]" />
@@ -670,7 +948,7 @@ export default function Dashboard() {
 
               {/* INITIATE PAYMENT MODAL */}
               {modalType === "initiatePayment" && settleData && (
-                <form onSubmit={handleSubmitPayment}>
+                <form onSubmit={handleSubmitPayment} className="overflow-y-auto pr-2">
                   <div className="flex justify-between items-center mb-6">
                     <h3 className="text-xl font-bold text-[#1D1D1F]">Pay {settleData.toUser.name?.split(" ")[0]}</h3>
                     <button type="button" onClick={closeModal} className="p-2 bg-[#F5F5F7] hover:bg-gray-200 rounded-full transition-colors"><X className="w-5 h-5 text-[#86868B]" /></button>
@@ -707,7 +985,7 @@ export default function Dashboard() {
 
               {/* PENDING APPROVALS MODAL */}
               {modalType === "approvals" && (
-                <div>
+                <div className="overflow-y-auto pr-2">
                   <div className="mb-6">
                     <h3 className="text-xl font-bold text-[#1D1D1F]">Pending Approvals</h3>
                     <p className="text-sm text-[#86868B] mt-1">Confirm payments sent to you.</p>
@@ -725,7 +1003,6 @@ export default function Dashboard() {
                              </div>
                              <p className="font-bold text-lg text-green-600">₹{txn.amount}</p>
                            </div>
-                           {/* Show inline image preview instead of external link */}
                            {txn.proofUrl && (
                              <img src={txn.proofUrl} alt="Payment Screenshot" className="w-full rounded-xl border border-gray-200 mb-3 max-h-48 object-contain bg-gray-100" />
                            )}
@@ -739,14 +1016,14 @@ export default function Dashboard() {
                 </div>
               )}
 
-              {/* 1. ADD EXPENSE MODAL */}
+              {/* ADD / EDIT EXPENSE MODAL */}
               {modalType === "addExpense" && (
-                <form onSubmit={handleAddExpense}>
+                <form onSubmit={handleAddExpense} className="overflow-y-auto pr-2">
                   <div className="mb-6">
                     <div className="w-12 h-12 bg-[#34C759]/10 rounded-2xl flex items-center justify-center mb-4">
                       <Banknote className="w-6 h-6 text-[#34C759]" />
                     </div>
-                    <h3 className="text-2xl font-bold text-[#1D1D1F]">Add Expense</h3>
+                    <h3 className="text-2xl font-bold text-[#1D1D1F]">{editingTxnId ? "Edit Expense" : "Add Expense"}</h3>
                     <p className="text-sm text-[#86868B] mt-1">Paid by you</p>
                   </div>
                   {errorMsg && <p className="bg-red-50 text-red-600 p-3 rounded-xl text-sm font-medium mb-4 border border-red-100">{errorMsg}</p>}
@@ -790,14 +1067,14 @@ export default function Dashboard() {
                   
                   <button type="submit" disabled={isSubmitting || !expenseDesc || !expenseAmt || (splitType === "custom" && splitAmong.length === 0)} className="w-full bg-[#34C759] hover:bg-[#2EAF4E] disabled:opacity-50 text-white py-3.5 rounded-xl font-semibold flex items-center justify-center gap-2 transition-all active:scale-95 shadow-sm">
                     {isSubmitting && <Loader2 className="w-5 h-5 animate-spin" />}
-                    {!isSubmitting && "Save Expense"}
+                    {!isSubmitting && (editingTxnId ? "Update Expense" : "Save Expense")}
                   </button>
                 </form>
               )}
 
               {/* 2 & 3. CREATE / EDIT FLAT MODAL */}
               {(modalType === "create" || modalType === "editFlat") && (
-                <form onSubmit={modalType === "create" ? handleCreateFlat : handleEditFlat}>
+                <form onSubmit={modalType === "create" ? handleCreateFlat : handleEditFlat} className="overflow-y-auto pr-2">
                   <div className="mb-6">
                     <div className="w-12 h-12 bg-[#0071E3]/10 rounded-2xl flex items-center justify-center mb-4">
                       {modalType === "create" ? <Plus className="w-6 h-6 text-[#0071E3]" /> : <Settings className="w-6 h-6 text-[#0071E3]" />}
@@ -838,7 +1115,7 @@ export default function Dashboard() {
 
               {/* 4. JOIN FLAT MODAL */}
               {modalType === "join" && (
-                <form onSubmit={handleJoinFlat}>
+                <form onSubmit={handleJoinFlat} className="overflow-y-auto pr-2">
                   <div className="mb-6">
                     <div className="w-12 h-12 bg-[#0071E3]/10 rounded-2xl flex items-center justify-center mb-4"><Users className="w-6 h-6 text-[#0071E3]" /></div>
                     <h3 className="text-2xl font-bold text-[#1D1D1F]">Join a Flat</h3>
@@ -856,7 +1133,7 @@ export default function Dashboard() {
 
               {/* 5. PAST FLATS LIST MODAL */}
               {modalType === "pastFlats" && (
-                <div>
+                <div className="overflow-y-auto pr-2">
                   <div className="flex items-center gap-3 mb-6">
                     <div className="p-3 bg-[#0071E3]/10 text-[#0071E3] rounded-2xl"><History className="w-6 h-6"/></div>
                     <h3 className="text-2xl font-bold text-[#1D1D1F]">Previous Flats</h3>
@@ -879,9 +1156,9 @@ export default function Dashboard() {
 
               {/* 6. PAST FLAT TRANSACTIONS DETAILS MODAL */}
               {modalType === "pastFlatHistory" && (
-                <div>
+                <div className="overflow-y-auto pr-2">
                   <div className="flex items-center gap-3 mb-6 border-b border-gray-100 pb-4">
-                    <button onClick={() => setModalType("pastFlats")} className="p-2 bg-[#F5F5F7] hover:bg-gray-200 rounded-full transition-colors active:scale-95">
+                    <button onClick={() => setModalType("pastFlats")} className="p-2 bg-[#F5F5F7] hover:bg-gray-200 rounded-full transition-colors active:scale-scale-95">
                       <ChevronLeft className="w-5 h-5 text-[#1D1D1F]" />
                     </button>
                     <div>
@@ -918,9 +1195,9 @@ export default function Dashboard() {
                 </div>
               )}
 
-              {/* LEAVE CONFIRM & TRANSFER ADMIN */}
+              {/* LEAVE CONFIRM MODAL */}
               {modalType === "leaveConfirm" && (
-                <div className="text-center py-2">
+                <div className="text-center py-2 overflow-y-auto pr-2">
                   <div className="w-16 h-16 bg-[#FF3B30]/10 text-[#FF3B30] rounded-full flex items-center justify-center mx-auto mb-6"><UserMinus className="w-8 h-8"/></div>
                   <h3 className="text-2xl font-bold text-[#1D1D1F] mb-2">Leave Flat?</h3>
                   <p className="text-[#86868B] text-sm mb-8">Are you sure you want to leave <b>{flatData?.flatName}</b>? You will need a new invite code to rejoin later.</p>
@@ -933,8 +1210,9 @@ export default function Dashboard() {
                 </div>
               )}
               
+              {/* TRANSFER ADMIN MODAL */}
               {modalType === "transferAdmin" && (
-                <div>
+                <div className="overflow-y-auto pr-2">
                   <h3 className="text-2xl font-bold text-red-600 mb-2">Action Required</h3>
                   <p className="text-gray-600 text-sm mb-6">You are the creator of this flat. You must assign admin rights to another flatmate before you can leave.</p>
                   <label className="block text-sm font-bold mb-2">Select new Admin:</label>
