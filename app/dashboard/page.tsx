@@ -4,8 +4,9 @@ import { useEffect, useState } from "react";
 import { auth, db } from "../../lib/firebase";
 import { doc, getDoc, setDoc, updateDoc, deleteDoc, arrayUnion, arrayRemove, collection, query, where, getDocs } from "firebase/firestore";
 import { useRouter } from "next/navigation";
-import { LogOut, Home, Plus, Users, Activity, X, Loader2, MapPin, LocateFixed, Menu, Settings, UserMinus, History, ChevronRight, ChevronLeft, Receipt, Banknote, QrCode, Upload, CheckCircle, Trash2, Edit2, Download, FileText, Search, Filter } from "lucide-react";
+import { LogOut, Home, Plus, Users, Activity, X, Loader2, MapPin, LocateFixed, Menu, Settings, UserMinus, History, ChevronRight, ChevronLeft, Receipt, Banknote, QrCode, Upload, CheckCircle, Trash2, Edit2, Download, FileText, Search, Filter, Bell, ShieldAlert } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
+import { BarChart, Bar, XAxis, Tooltip, ResponsiveContainer } from "recharts";
 
 // Helper: File -> base64 string
 const fileToBase64 = (file: File): Promise<string> => {
@@ -33,6 +34,7 @@ export default function Dashboard() {
   const [inputValue, setInputValue] = useState("");
   const [address, setAddress] = useState("");
   const [maxMates, setMaxMates] = useState("4");
+  const [isFlatLocked, setIsFlatLocked] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
   const [isFetchingLoc, setIsFetchingLoc] = useState(false);
@@ -128,6 +130,46 @@ export default function Dashboard() {
     );
   };
 
+  // --- ADMIN CONTROL: REMOVE MEMBER ---
+  const handleRemoveMember = async (memberId: string, memberName: string) => {
+    if (!confirm(`Are you sure you want to kick ${memberName} out of the flat?`)) return;
+    setIsLoading(true);
+    try {
+      await updateDoc(doc(db, "flats", userData.flatId), {
+        members: arrayRemove(memberId)
+      });
+      await updateDoc(doc(db, "users", memberId), {
+        flatId: null,
+        pastFlats: arrayUnion({ flatId: userData.flatId, flatName: flatData?.flatName, leftAt: new Date().toISOString() })
+      });
+      await loadData(user);
+    } catch(e) {
+      console.error(e);
+      alert("Failed to remove member.");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // --- NOTIFICATIONS: REQUEST PERMISSION ---
+  const requestNotificationPermission = async () => {
+    setIsMenuOpen(false);
+    if (!("Notification" in window)) {
+      alert("This browser does not support desktop notifications.");
+      return;
+    }
+    try {
+      const permission = await Notification.requestPermission();
+      if (permission === "granted") {
+        alert("Push Notifications enabled! You will now receive alerts for new expenses.");
+      } else {
+        alert("Notification permission denied. Please enable them in your browser settings.");
+      }
+    } catch (error) {
+      console.error("Error requesting notification permission:", error);
+    }
+  };
+
   // --- CREATE FLAT ---
   const handleCreateFlat = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -136,7 +178,7 @@ export default function Dashboard() {
     try {
       const flatId = Math.random().toString(36).substring(2, 8).toUpperCase();
       await setDoc(doc(db, "flats", flatId), {
-        flatId, flatName: inputValue, address, maxMates: Number(maxMates),
+        flatId, flatName: inputValue, address, maxMates: Number(maxMates), isLocked: false,
         members: [user.uid], createdBy: user.uid, createdAt: new Date().toISOString()
       });
       await updateDoc(doc(db, "users", user.uid), { flatId });
@@ -151,6 +193,7 @@ export default function Dashboard() {
     setInputValue(flatData.flatName);
     setAddress(flatData.address || "");
     setMaxMates(flatData.maxMates?.toString() || "4");
+    setIsFlatLocked(flatData.isLocked || false);
     setIsMenuOpen(false);
     setModalType("editFlat");
   };
@@ -161,7 +204,7 @@ export default function Dashboard() {
     setIsSubmitting(true);
     try {
       await updateDoc(doc(db, "flats", userData.flatId), {
-        flatName: inputValue, address, maxMates: Number(maxMates)
+        flatName: inputValue, address, maxMates: Number(maxMates), isLocked: isFlatLocked
       });
       await loadData(user); closeModal();
     } catch (e) { setErrorMsg("Error updating flat."); }
@@ -367,11 +410,8 @@ export default function Dashboard() {
     document.body.removeChild(link);
   };
 
-  // --- DOWNLOAD BEAUTIFUL PDF ---
+  // --- FIX: DOWNLOAD BEAUTIFUL PDF (Mobile Friendly Hidden Iframe) ---
   const handleDownloadPDF = () => {
-    const printWindow = window.open('', '_blank');
-    if (!printWindow) return alert("Please allow pop-ups to generate the PDF report.");
-
     const totalVolume = filteredTransactions.reduce((acc, curr) => acc + curr.amount, 0);
 
     const htmlContent = `
@@ -449,15 +489,32 @@ export default function Dashboard() {
               }).join('')}
             </tbody>
           </table>
-          
-          <script>
-            window.onload = function() { setTimeout(() => { window.print(); window.close(); }, 500); }
-          </script>
         </body>
       </html>
     `;
-    printWindow.document.write(htmlContent);
-    printWindow.document.close();
+
+    // Hidden iframe trick for reliable mobile printing
+    const iframe = document.createElement('iframe');
+    iframe.style.position = 'fixed';
+    iframe.style.width = '0px';
+    iframe.style.height = '0px';
+    iframe.style.border = 'none';
+    document.body.appendChild(iframe);
+
+    const doc = iframe.contentWindow?.document;
+    if (doc) {
+      doc.open();
+      doc.write(htmlContent);
+      doc.close();
+
+      setTimeout(() => {
+        iframe.contentWindow?.focus();
+        iframe.contentWindow?.print();
+        setTimeout(() => {
+          document.body.removeChild(iframe);
+        }, 2000);
+      }, 500);
+    }
   };
 
   // --- SAVE PAYMENT SETTINGS (base64) ---
@@ -598,12 +655,35 @@ export default function Dashboard() {
     return debts;
   };
 
+  // --- GET CHART DATA (LAST 7 DAYS TREND) ---
+  const getChartData = () => {
+    const dataMap: { [key: string]: number } = {};
+    const last7Days = [...Array(7)].map((_, i) => {
+      const d = new Date();
+      d.setDate(d.getDate() - i);
+      return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+    }).reverse();
+
+    last7Days.forEach(date => { dataMap[date] = 0; });
+
+    flatTransactions.forEach(txn => {
+      if (txn.type === 'expense') {
+        const dateStr = new Date(txn.date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+        if (dataMap[dateStr] !== undefined) {
+          dataMap[dateStr] += txn.amount;
+        }
+      }
+    });
+    return last7Days.map(date => ({ date, amount: dataMap[date] }));
+  };
+
   const closeModal = () => {
     setModalType(null); setErrorMsg(""); setInputValue(""); setAddress(""); setMaxMates("4");
     setExpenseDesc(""); setExpenseAmt(""); setSplitType("all"); setSplitAmong([]);
     setUpiId(""); setQrFile(null); setSettleData(null); setSettleAmount(""); setProofFile(null);
     setEditingTxnId(null);
     setFilterSearch(""); setFilterDateFrom(""); setFilterDateTo(""); setFilterPaidBy("all");
+    setIsFlatLocked(false);
   };
 
   if (isLoading) return <div className="min-h-screen bg-[#F5F5F7] flex items-center justify-center"><Loader2 className="w-8 h-8 text-[#0071E3] animate-spin" /></div>;
@@ -614,38 +694,44 @@ export default function Dashboard() {
   const myBalance = balances[user?.uid] || 0;
   const detailedDebts = calculateDetailedDebts(balances);
   const pendingApprovals = flatTransactions.filter(t => t.type === "settlement" && t.status === "pending" && t.to === user.uid);
+  const chartData = getChartData();
+  const isLocked = flatData?.isLocked || false;
   
   // REUSABLE TRANSACTION ITEM COMPONENT
-  const TransactionItem = ({ txn }: { txn: any }) => (
-    <div className="flex justify-between items-center p-3 bg-white rounded-xl border border-gray-100 shadow-sm group">
-      <div className="flex-1">
-        <p className="font-bold text-sm text-[#1D1D1F]">
-          {txn.type === "settlement" ? "Payment Settlement" : txn.description}
-          {txn.type === "settlement" && txn.status === "pending" && <span className="ml-2 text-[10px] bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded-full">Pending</span>}
-        </p>
-        <p className="text-xs text-gray-400 mt-0.5">
-          {new Date(txn.date).toLocaleDateString()} • {txn.type === "settlement" ? `From ${txn.from === user.uid ? "You" : flatMembers.find(m=>m.uid===txn.from)?.name?.split(" ")[0]}` : `Paid by ${txn.paidBy === user.uid ? "You" : flatMembers.find(m => m.uid === txn.paidBy)?.name?.split(" ")[0]}`}
-        </p>
+  const TransactionItem = ({ txn }: { txn: any }) => {
+    // Check if transaction was created within the last 24 hours
+    const isWithin24Hours = (Date.now() - new Date(txn.date).getTime()) < 24 * 60 * 60 * 1000;
+
+    return (
+      <div className="flex justify-between items-center p-3 bg-white rounded-xl border border-gray-100 shadow-sm group">
+        <div className="flex-1">
+          <p className="font-bold text-sm text-[#1D1D1F]">
+            {txn.type === "settlement" ? "Payment Settlement" : txn.description}
+            {txn.type === "settlement" && txn.status === "pending" && <span className="ml-2 text-[10px] bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded-full">Pending</span>}
+          </p>
+          <p className="text-xs text-gray-400 mt-0.5">
+            {new Date(txn.date).toLocaleDateString()} • {txn.type === "settlement" ? `From ${txn.from === user.uid ? "You" : flatMembers.find(m=>m.uid===txn.from)?.name?.split(" ")[0]}` : `Paid by ${txn.paidBy === user.uid ? "You" : flatMembers.find(m => m.uid === txn.paidBy)?.name?.split(" ")[0]}`}
+          </p>
+        </div>
+        <div className="flex items-center gap-3">
+          <p className={`font-bold ${txn.type === "settlement" ? "text-green-600" : "text-[#1D1D1F]"}`}>₹{txn.amount}</p>
+          
+          {/* EDIT & DELETE ACTIONS (Disabled if Locked, and only allowed within 24 hours) */}
+          {!isLocked && isWithin24Hours && txn.type === "expense" && txn.paidBy === user.uid && (
+            <div className="flex items-center gap-1 opacity-40 hover:opacity-100 transition-opacity">
+              <button onClick={() => openEditTransaction(txn)} className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"><Edit2 className="w-3.5 h-3.5"/></button>
+              <button onClick={() => handleDeleteTransaction(txn.transactionId)} className="p-1.5 text-red-600 hover:bg-red-50 rounded-lg transition-colors"><Trash2 className="w-3.5 h-3.5"/></button>
+            </div>
+          )}
+          {!isLocked && isWithin24Hours && txn.type === "settlement" && txn.status === "pending" && txn.from === user.uid && (
+            <div className="flex items-center gap-1 opacity-40 hover:opacity-100 transition-opacity">
+              <button onClick={() => handleDeleteTransaction(txn.transactionId)} className="p-1.5 text-red-600 hover:bg-red-50 rounded-lg transition-colors"><Trash2 className="w-3.5 h-3.5"/></button>
+            </div>
+          )}
+        </div>
       </div>
-      <div className="flex items-center gap-3">
-        <p className={`font-bold ${txn.type === "settlement" ? "text-green-600" : "text-[#1D1D1F]"}`}>₹{txn.amount}</p>
-        
-        {/* EDIT & DELETE ACTIONS */}
-        {txn.type === "expense" && txn.paidBy === user.uid && (
-          <div className="flex items-center gap-1 opacity-40 hover:opacity-100 transition-opacity">
-            <button onClick={() => openEditTransaction(txn)} className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"><Edit2 className="w-3.5 h-3.5"/></button>
-            <button onClick={() => handleDeleteTransaction(txn.transactionId)} className="p-1.5 text-red-600 hover:bg-red-50 rounded-lg transition-colors"><Trash2 className="w-3.5 h-3.5"/></button>
-          </div>
-        )}
-        {/* Allow deleting pending settlements for sender */}
-        {txn.type === "settlement" && txn.status === "pending" && txn.from === user.uid && (
-          <div className="flex items-center gap-1 opacity-40 hover:opacity-100 transition-opacity">
-            <button onClick={() => handleDeleteTransaction(txn.transactionId)} className="p-1.5 text-red-600 hover:bg-red-50 rounded-lg transition-colors"><Trash2 className="w-3.5 h-3.5"/></button>
-          </div>
-        )}
-      </div>
-    </div>
-  );
+    );
+  };
 
   return (
     <div className="min-h-screen bg-[#F5F5F7] text-[#1D1D1F] font-sans pb-10 overflow-x-hidden">
@@ -683,9 +769,12 @@ export default function Dashboard() {
                     <button onClick={() => { setUpiId(userData?.upiId || ""); setIsMenuOpen(false); setModalType("paymentSettings"); }} className="w-full flex items-center gap-3 p-3 hover:bg-[#F5F5F7] rounded-xl font-medium transition-colors text-left active:scale-95">
                       <QrCode className="w-5 h-5 text-[#0071E3]" /> Payment Settings
                     </button>
+                    <button onClick={requestNotificationPermission} className="w-full flex items-center gap-3 p-3 hover:bg-[#F5F5F7] rounded-xl font-medium transition-colors text-left active:scale-95">
+                      <Bell className="w-5 h-5 text-yellow-500" /> Enable Notifications
+                    </button>
                     {flatData?.createdBy === user.uid && (
                       <button onClick={openEditModal} className="w-full flex items-center gap-3 p-3 hover:bg-[#F5F5F7] rounded-xl font-medium transition-colors text-left active:scale-95">
-                        <Settings className="w-5 h-5 text-gray-500" /> Edit Flat Details
+                        <Settings className="w-5 h-5 text-gray-500" /> Flat Settings & Admin
                       </button>
                     )}
                     <button onClick={initiateLeaveFlat} className="w-full flex items-center gap-3 p-3 hover:bg-red-50 rounded-xl font-medium text-red-600 transition-colors text-left active:scale-95">
@@ -740,7 +829,14 @@ export default function Dashboard() {
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="md:col-span-2 bg-white rounded-[24px] shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-gray-100 p-6 sm:p-8 flex flex-col">
                <div className="flex justify-between items-start mb-6">
                  <div>
-                   <h3 className="font-bold text-2xl">{flatData?.flatName}</h3>
+                   <h3 className="font-bold text-2xl flex items-center gap-2">
+                     {flatData?.flatName} 
+                     {isLocked && (
+  <span title="Flat is Locked">
+    <ShieldAlert className="w-5 h-5 text-red-500" />
+  </span>
+)}
+                   </h3>
                    <p className="text-sm text-[#86868B] mt-1 flex items-center gap-1"><MapPin className="w-3 h-3"/> {flatData?.address?.split(',')[0]}</p>
                  </div>
                  <div className="bg-[#F5F5F7] px-3 py-1.5 rounded-xl text-sm font-medium text-[#86868B] border border-gray-200">
@@ -753,7 +849,7 @@ export default function Dashboard() {
                  <p className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-3">Members ({flatMembers.length}/{flatData?.maxMates})</p>
                  <div className="flex flex-wrap gap-2">
                     {flatMembers.map((member, i) => (
-                      <div key={i} className="flex items-center gap-2 bg-[#F5F5F7] pr-3 pl-1 py-1 rounded-full border border-gray-100">
+                      <div key={i} className="flex items-center gap-2 bg-[#F5F5F7] pr-3 pl-1 py-1 rounded-full border border-gray-100 group relative">
                         {member.photoURL ? (
                           <img src={member.photoURL} alt={member.name} className="w-7 h-7 rounded-full object-cover" onError={(e) => (e.currentTarget.style.display = 'none')} />
                         ) : (
@@ -762,6 +858,13 @@ export default function Dashboard() {
                           </div>
                         )}
                         <span className="text-sm font-medium text-[#1D1D1F]">{member.name?.split(" ")[0]}</span>
+                        
+                        {/* ADMIN KICK BUTTON */}
+                        {flatData?.createdBy === user?.uid && member.uid !== user?.uid && (
+                          <button onClick={() => handleRemoveMember(member.uid, member.name)} className="hidden group-hover:block ml-1 text-red-500 hover:text-red-700 transition-colors" title="Remove Member">
+                            <X className="w-4 h-4" />
+                          </button>
+                        )}
                       </div>
                     ))}
                  </div>
@@ -790,12 +893,14 @@ export default function Dashboard() {
                  )}
                </div>
                
-               {/* ADD EXPENSE BUTTON */}
+               {/* ADD EXPENSE BUTTON (Disabled if Locked) */}
                <button 
-                 onClick={() => { setEditingTxnId(null); setSplitType("all"); setSplitAmong([]); setModalType("addExpense"); }} 
-                 className="mt-6 w-full bg-[#0071E3] hover:bg-[#0077ED] text-white py-3.5 rounded-xl font-semibold flex justify-center items-center gap-2 active:scale-95 transition-all shadow-sm"
+                 onClick={() => { if(!isLocked) { setEditingTxnId(null); setSplitType("all"); setSplitAmong([]); setModalType("addExpense"); } }} 
+                 disabled={isLocked}
+                 className={`mt-6 w-full py-3.5 rounded-xl font-semibold flex justify-center items-center gap-2 transition-all shadow-sm ${isLocked ? 'bg-gray-300 text-gray-500 cursor-not-allowed' : 'bg-[#0071E3] hover:bg-[#0077ED] text-white active:scale-95'}`}
                >
-                 <Plus className="w-5 h-5"/> Add New Expense
+                 {isLocked ? <ShieldAlert className="w-5 h-5"/> : <Plus className="w-5 h-5"/>} 
+                 {isLocked ? "Flat is Locked by Admin" : "Add New Expense"}
                </button>
 
             </motion.div>
@@ -832,7 +937,7 @@ export default function Dashboard() {
                           <span className="font-bold text-[#1D1D1F] mr-3">₹{Math.round(debt.amount)}</span>
                           
                           {/* SHOW PAY BUTTON IF USER IS THE DEBTOR */}
-                          {debt.from === user.uid && (
+                          {debt.from === user.uid && !isLocked && (
                             <button onClick={() => openSettleModal(debt)} className="bg-black text-white text-xs px-3 py-1.5 rounded-lg font-bold hover:bg-gray-800 active:scale-95 transition-all">Pay</button>
                           )}
                         </div>
@@ -841,6 +946,24 @@ export default function Dashboard() {
                  )}
                  {flatMembers.length <= 1 && (
                     <p className="text-sm text-gray-400 italic text-center py-2">Add members to see split</p>
+                 )}
+              </div>
+
+              {/* EXPENSE TRENDS CHART */}
+              <div className="mt-8 pt-6 border-t border-gray-100">
+                 <p className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-4">Last 7 Days Trend</p>
+                 {chartData.some(d => d.amount > 0) ? (
+                   <div className="h-40 w-full">
+                     <ResponsiveContainer width="100%" height="100%">
+                       <BarChart data={chartData}>
+                         <XAxis dataKey="date" tick={{fontSize: 10, fill: '#86868B'}} axisLine={false} tickLine={false} />
+                         <Tooltip cursor={{fill: '#F5F5F7'}} contentStyle={{borderRadius: '12px', border: '1px solid #E5E5EA', boxShadow: '0 4px 12px rgba(0,0,0,0.05)'}} />
+                         <Bar dataKey="amount" fill="#0071E3" radius={[4, 4, 0, 0]} />
+                       </BarChart>
+                     </ResponsiveContainer>
+                   </div>
+                 ) : (
+                   <p className="text-sm text-[#86868B] italic">No recent expenses to plot.</p>
                  )}
               </div>
 
@@ -894,7 +1017,6 @@ export default function Dashboard() {
                         <input type="date" value={filterDateTo} onChange={e=>setFilterDateTo(e.target.value)} className="w-full bg-white border border-transparent focus:border-[#0071E3] rounded-lg px-3 py-2 text-sm outline-none" />
                       </div>
                     </div>
-                    {/* Clear Filters Button */}
                     {(filterSearch || filterDateFrom || filterDateTo || filterPaidBy !== "all") && (
                       <div className="text-right">
                         <button onClick={()=>{setFilterSearch(""); setFilterDateFrom(""); setFilterDateTo(""); setFilterPaidBy("all");}} className="text-xs text-red-500 font-bold hover:underline transition-all">Clear Filters</button>
@@ -1072,14 +1194,14 @@ export default function Dashboard() {
                 </form>
               )}
 
-              {/* 2 & 3. CREATE / EDIT FLAT MODAL */}
+              {/* EDIT FLAT & ADMIN SETTINGS MODAL */}
               {(modalType === "create" || modalType === "editFlat") && (
                 <form onSubmit={modalType === "create" ? handleCreateFlat : handleEditFlat} className="overflow-y-auto pr-2">
                   <div className="mb-6">
                     <div className="w-12 h-12 bg-[#0071E3]/10 rounded-2xl flex items-center justify-center mb-4">
                       {modalType === "create" ? <Plus className="w-6 h-6 text-[#0071E3]" /> : <Settings className="w-6 h-6 text-[#0071E3]" />}
                     </div>
-                    <h3 className="text-2xl font-bold text-[#1D1D1F]">{modalType === "create" ? "Setup New Flat" : "Edit Flat Details"}</h3>
+                    <h3 className="text-2xl font-bold text-[#1D1D1F]">{modalType === "create" ? "Setup New Flat" : "Flat Settings"}</h3>
                   </div>
                   {errorMsg && <p className="bg-red-50 text-red-600 p-3 rounded-xl text-sm font-medium mb-4 border border-red-100">{errorMsg}</p>}
                   
@@ -1105,6 +1227,17 @@ export default function Dashboard() {
                           <option value="2">2 People</option><option value="3">3 People</option><option value="4">4 People</option><option value="5">5 People</option><option value="6">6 People (Max)</option>
                        </select>
                     </div>
+                    
+                    {/* ADMIN CONTROL: LOCK FLAT */}
+                    {modalType === "editFlat" && flatData?.createdBy === user?.uid && (
+                      <div className="flex items-center justify-between p-4 bg-red-50 rounded-xl border border-red-100 mt-2">
+                        <div>
+                          <h4 className="text-sm font-bold text-red-700">Lock Flat Ledger</h4>
+                          <p className="text-xs text-red-600/80">Prevent new expenses from being added.</p>
+                        </div>
+                        <input type="checkbox" checked={isFlatLocked} onChange={(e) => setIsFlatLocked(e.target.checked)} className="w-5 h-5 text-red-600 bg-white border-gray-300 rounded focus:ring-red-500 focus:ring-2 cursor-pointer" />
+                      </div>
+                    )}
                   </div>
                   <button type="submit" disabled={isSubmitting || !inputValue || !address} className="w-full bg-[#0071E3] hover:bg-[#0077ED] disabled:opacity-50 text-white py-3.5 rounded-xl font-semibold flex items-center justify-center gap-2 transition-all active:scale-95">
                     {isSubmitting && <Loader2 className="w-5 h-5 animate-spin" />}
