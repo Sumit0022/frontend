@@ -207,6 +207,23 @@ export default function Dashboard() {
     } catch (e) { setErrorMsg("Error leaving flat."); setIsSubmitting(false); }
   };
 
+  // --- VIEW PAST FLAT HISTORY ---
+  const handleViewPastFlat = async (pf: any) => {
+    setSelectedPastFlat(pf);
+    setModalType("pastFlatHistory");
+    setIsSubmitting(true);
+    try {
+      const q = query(collection(db, "transactions"), where("flatId", "==", pf.flatId));
+      const txnsSnap = await getDocs(q);
+      setPastTransactions(txnsSnap.docs.map(d => d.data()));
+    } catch (e) {
+      console.error(e);
+      setPastTransactions([]);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
   // --- ADD EXPENSE LOGIC ---
   const handleAddExpense = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -339,7 +356,6 @@ export default function Dashboard() {
           balances[uid] = (balances[uid] || 0) - splitAmount;
         });
       } else if (txn.type === "settlement" && txn.status === "approved") {
-        // Settlement clears debt: Payer (+) gets their debt reduced, Receiver (-) gets money back
         balances[txn.from] = (balances[txn.from] || 0) + txn.amount;
         balances[txn.to] = (balances[txn.to] || 0) - txn.amount;
       }
@@ -837,7 +853,6 @@ export default function Dashboard() {
                     <h3 className="text-2xl font-bold text-[#1D1D1F]">Previous Flats</h3>
                   </div>
                   <div className="space-y-3">
-                    {/* Yahan ( || [] ) lagaya hai taaki TypeScript undefined par error na de */}
                     {(userData?.pastFlats || []).map((pf: any, idx: number) => (
                       <div key={idx} onClick={() => { handleViewPastFlat(pf); }} className="flex justify-between items-center p-4 bg-[#F5F5F7] border border-transparent hover:border-gray-200 rounded-2xl cursor-pointer group transition-all active:scale-95">
                         <div>
