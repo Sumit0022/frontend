@@ -1,10 +1,11 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { auth, db } from "../../lib/firebase";
+import { auth, db, storage } from "../../lib/firebase";
 import { doc, getDoc, setDoc, updateDoc, arrayUnion, arrayRemove, collection, query, where, getDocs } from "firebase/firestore";
+import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { useRouter } from "next/navigation";
-import { LogOut, Home, Plus, Users, Activity, X, Loader2, MapPin, LocateFixed, Menu, Settings, UserMinus, History, ChevronRight, ChevronLeft, Receipt, Banknote } from "lucide-react";
+import { LogOut, Home, Plus, Users, Activity, X, Loader2, MapPin, LocateFixed, Menu, Settings, UserMinus, History, ChevronRight, ChevronLeft, Receipt, Banknote, QrCode, Upload, CheckCircle, IndianRupee } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 
 export default function Dashboard() {
@@ -12,12 +13,12 @@ export default function Dashboard() {
   const [userData, setUserData] = useState<any>(null);
   const [flatData, setFlatData] = useState<any>(null);
   const [flatMembers, setFlatMembers] = useState<any[]>([]); 
-  const [flatTransactions, setFlatTransactions] = useState<any[]>([]); // Current flat transactions
+  const [flatTransactions, setFlatTransactions] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   
   // UI States
   const [isMenuOpen, setIsMenuOpen] = useState(false);
-  const [modalType, setModalType] = useState<"create" | "join" | "leaveConfirm" | "transferAdmin" | "pastFlats" | "editFlat" | "pastFlatHistory" | "addExpense" | null>(null);
+  const [modalType, setModalType] = useState<"create" | "join" | "leaveConfirm" | "transferAdmin" | "pastFlats" | "editFlat" | "pastFlatHistory" | "addExpense" | "paymentSettings" | "initiatePayment" | "approvals" | null>(null);
   
   // Form States
   const [inputValue, setInputValue] = useState("");
@@ -32,6 +33,13 @@ export default function Dashboard() {
   const [expenseAmt, setExpenseAmt] = useState("");
   const [splitType, setSplitType] = useState("all"); 
   const [splitAmong, setSplitAmong] = useState<string[]>([]); 
+
+  // Payment & Settlement States
+  const [upiId, setUpiId] = useState("");
+  const [qrFile, setQrFile] = useState<File | null>(null);
+  const [settleData, setSettleData] = useState<any>(null);
+  const [settleAmount, setSettleAmount] = useState("");
+  const [proofFile, setProofFile] = useState<File | null>(null);
 
   // Transfer Admin & Past Flat States
   const [otherMembers, setOtherMembers] = useState<any[]>([]);
@@ -199,23 +207,6 @@ export default function Dashboard() {
     } catch (e) { setErrorMsg("Error leaving flat."); setIsSubmitting(false); }
   };
 
-  // --- VIEW PAST FLAT TRANSACTIONS ---
-  const handleViewPastFlat = async (pf: any) => {
-    setSelectedPastFlat(pf);
-    setModalType("pastFlatHistory");
-    setIsSubmitting(true); 
-    try {
-      const q = query(collection(db, "transactions"), where("flatId", "==", pf.flatId));
-      const querySnapshot = await getDocs(q);
-      const txns = querySnapshot.docs.map(doc => doc.data());
-      setPastTransactions(txns);
-    } catch (error) {
-      console.error("Error fetching past transactions:", error);
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
-
   // --- ADD EXPENSE LOGIC ---
   const handleAddExpense = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -236,15 +227,98 @@ export default function Dashboard() {
         flatId: userData.flatId,
         description: expenseDesc,
         amount: Number(expenseAmt),
-        paidBy: user.uid, // Jo add kar raha hai, wahi pay kar raha hai
-        splitAmong: finalSplit, // Kin logo me divide karna hai
+        paidBy: user.uid,
+        splitAmong: finalSplit, 
         date: new Date().toISOString(),
         type: "expense"
       });
       await loadData(user); 
       closeModal();
     } catch (error) {
-      setErrorMsg("Expense add karne mein error aayi.");
+      setErrorMsg("Error adding expense.");
+      console.error(error);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  // --- SAVE PAYMENT SETTINGS ---
+  const handleSavePaymentSettings = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsSubmitting(true);
+    try {
+      let qrCodeUrl = userData.qrCodeUrl || "";
+      if (qrFile) {
+        const fileRef = ref(storage, `qrCodes/${user.uid}_${Date.now()}`);
+        await uploadBytes(fileRef, qrFile);
+        qrCodeUrl = await getDownloadURL(fileRef);
+      }
+      await updateDoc(doc(db, "users", user.uid), { upiId, qrCodeUrl });
+      await loadData(user);
+      closeModal();
+    } catch (error) {
+      setErrorMsg("Error saving details.");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  // --- INITIATE PAYMENT (OPEN MODAL) ---
+  const openSettleModal = async (debt: any) => {
+    setIsMenuOpen(false);
+    setIsLoading(true);
+    try {
+      const uSnap = await getDoc(doc(db, "users", debt.to));
+      if (uSnap.exists()) {
+        setSettleData({ toUser: uSnap.data(), recommendedAmount: debt.amount });
+        setSettleAmount(Math.round(debt.amount).toString());
+        setModalType("initiatePayment");
+      }
+    } catch (error) {
+      console.error(error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // --- SUBMIT PAYMENT PROOF ---
+  const handleSubmitPayment = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!proofFile || !settleAmount) return setErrorMsg("Proof and amount required.");
+    setIsSubmitting(true);
+    try {
+      const proofRef = ref(storage, `proofs/${user.uid}_${Date.now()}`);
+      await uploadBytes(proofRef, proofFile);
+      const proofUrl = await getDownloadURL(proofRef);
+
+      const txnId = "stl_" + Date.now();
+      await setDoc(doc(db, "transactions", txnId), {
+        transactionId: txnId,
+        flatId: userData.flatId,
+        amount: Number(settleAmount),
+        from: user.uid,
+        to: settleData.toUser.uid,
+        proofUrl,
+        date: new Date().toISOString(),
+        type: "settlement",
+        status: "pending"
+      });
+      await loadData(user);
+      closeModal();
+    } catch (error) {
+      setErrorMsg("Error submitting payment.");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  // --- APPROVE PAYMENT ---
+  const handleApprovePayment = async (txnId: string) => {
+    setIsSubmitting(true);
+    try {
+      await updateDoc(doc(db, "transactions", txnId), { status: "approved" });
+      await loadData(user);
+    } catch (error) {
       console.error(error);
     } finally {
       setIsSubmitting(false);
@@ -257,30 +331,70 @@ export default function Dashboard() {
     flatMembers.forEach(m => balances[m.uid] = 0);
 
     flatTransactions.forEach(txn => {
-      const splitCount = txn.splitAmong?.length || 1;
-      const splitAmount = txn.amount / splitCount;
-
-      // Jisne pay kiya, uska balance badhega
-      balances[txn.paidBy] = (balances[txn.paidBy] || 0) + txn.amount;
-      
-      // Jisme split hua, unka balance ghatega
-      txn.splitAmong?.forEach((uid: string) => {
-        balances[uid] = (balances[uid] || 0) - splitAmount;
-      });
+      if (txn.type === "expense") {
+        const splitCount = txn.splitAmong?.length || 1;
+        const splitAmount = txn.amount / splitCount;
+        balances[txn.paidBy] = (balances[txn.paidBy] || 0) + txn.amount;
+        txn.splitAmong?.forEach((uid: string) => {
+          balances[uid] = (balances[uid] || 0) - splitAmount;
+        });
+      } else if (txn.type === "settlement" && txn.status === "approved") {
+        // Settlement clears debt: Payer (+) gets their debt reduced, Receiver (-) gets money back
+        balances[txn.from] = (balances[txn.from] || 0) + txn.amount;
+        balances[txn.to] = (balances[txn.to] || 0) - txn.amount;
+      }
     });
     return balances;
+  };
+
+  // --- CALCULATE DETAILED DEBTS (WHO OWES WHOM) ---
+  const calculateDetailedDebts = (balances: any) => {
+    let debtors: any[] = [];
+    let creditors: any[] = [];
+
+    for (const uid in balances) {
+      if (balances[uid] < -0.01) debtors.push({ uid, amount: Math.abs(balances[uid]) });
+      if (balances[uid] > 0.01) creditors.push({ uid, amount: balances[uid] });
+    }
+
+    let debts = [];
+    let d = 0; 
+    let c = 0; 
+
+    while (d < debtors.length && c < creditors.length) {
+      let debtor = debtors[d];
+      let creditor = creditors[c];
+      let settleAmount = Math.min(debtor.amount, creditor.amount);
+
+      debts.push({
+        from: debtor.uid,
+        to: creditor.uid,
+        amount: settleAmount
+      });
+
+      debtor.amount -= settleAmount;
+      creditor.amount -= settleAmount;
+
+      if (debtor.amount < 0.01) d++;
+      if (creditor.amount < 0.01) c++;
+    }
+    return debts;
   };
 
   const closeModal = () => {
     setModalType(null); setErrorMsg(""); setInputValue(""); setAddress(""); setMaxMates("4");
     setExpenseDesc(""); setExpenseAmt(""); setSplitType("all"); setSplitAmong([]);
+    setUpiId(""); setQrFile(null); setSettleData(null); setSettleAmount(""); setProofFile(null);
   };
 
   if (isLoading) return <div className="min-h-screen bg-[#F5F5F7] flex items-center justify-center"><Loader2 className="w-8 h-8 text-[#0071E3] animate-spin" /></div>;
 
   const getInitials = (name: string) => name ? name.charAt(0).toUpperCase() : "U";
+  
   const balances = calculateBalances();
   const myBalance = balances[user?.uid] || 0;
+  const detailedDebts = calculateDetailedDebts(balances);
+  const pendingApprovals = flatTransactions.filter(t => t.type === "settlement" && t.status === "pending" && t.to === user.uid);
 
   return (
     <div className="min-h-screen bg-[#F5F5F7] text-[#1D1D1F] font-sans pb-10 overflow-x-hidden">
@@ -289,8 +403,11 @@ export default function Dashboard() {
       <nav className="bg-white/80 backdrop-blur-md border-b border-gray-200 px-4 sm:px-6 py-4 sticky top-0 z-40">
         <div className="max-w-5xl mx-auto flex justify-between items-center">
           <h1 className="text-[26px] font-extrabold tracking-tight text-[#1D1D1F] lowercase">flatmates.</h1>
-          <button onClick={() => setIsMenuOpen(true)} className="p-2 hover:bg-gray-100 rounded-full transition-colors active:scale-95">
+          <button onClick={() => setIsMenuOpen(true)} className="relative p-2 hover:bg-gray-100 rounded-full transition-colors active:scale-95">
             <Menu className="w-6 h-6 text-[#1D1D1F]" />
+            {pendingApprovals.length > 0 && (
+              <span className="absolute top-1 right-1 w-3 h-3 bg-red-500 rounded-full border-2 border-white"></span>
+            )}
           </button>
         </div>
       </nav>
@@ -305,9 +422,16 @@ export default function Dashboard() {
                 <h2 className="font-bold text-xl">Menu</h2>
                 <button onClick={() => setIsMenuOpen(false)} className="p-2 bg-[#F5F5F7] hover:bg-gray-200 rounded-full transition-colors"><X className="w-5 h-5" /></button>
               </div>
-              <div className="space-y-2 flex-grow">
+              <div className="space-y-2 flex-grow overflow-y-auto">
                 {userData?.flatId && (
                   <>
+                    <button onClick={() => { setIsMenuOpen(false); setModalType("approvals"); }} className="w-full flex items-center justify-between p-3 hover:bg-[#F5F5F7] rounded-xl font-medium transition-colors text-left active:scale-95">
+                      <div className="flex items-center gap-3"><CheckCircle className="w-5 h-5 text-green-600" /> Pending Approvals</div>
+                      {pendingApprovals.length > 0 && <span className="bg-red-500 text-white text-xs font-bold px-2 py-0.5 rounded-full">{pendingApprovals.length}</span>}
+                    </button>
+                    <button onClick={() => { setUpiId(userData?.upiId || ""); setIsMenuOpen(false); setModalType("paymentSettings"); }} className="w-full flex items-center gap-3 p-3 hover:bg-[#F5F5F7] rounded-xl font-medium transition-colors text-left active:scale-95">
+                      <QrCode className="w-5 h-5 text-[#0071E3]" /> Payment Settings
+                    </button>
                     {flatData?.createdBy === user.uid && (
                       <button onClick={openEditModal} className="w-full flex items-center gap-3 p-3 hover:bg-[#F5F5F7] rounded-xl font-medium transition-colors text-left active:scale-95">
                         <Settings className="w-5 h-5 text-gray-500" /> Edit Flat Details
@@ -397,19 +521,22 @@ export default function Dashboard() {
                  {flatTransactions.length === 0 ? (
                     <div className="flex flex-col items-center justify-center h-full text-[#86868B] py-6">
                       <Receipt className="w-8 h-8 text-gray-300 mb-2" />
-                      <p className="text-sm font-medium">No expenses added yet.</p>
+                      <p className="text-sm font-medium">No activity yet.</p>
                     </div>
                  ) : (
                     <div className="space-y-3">
                       {flatTransactions.sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime()).map((txn, i) => (
                         <div key={i} className="flex justify-between items-center p-3 bg-white rounded-xl border border-gray-100 shadow-sm">
                            <div>
-                             <p className="font-bold text-sm text-[#1D1D1F]">{txn.description}</p>
+                             <p className="font-bold text-sm text-[#1D1D1F]">
+                               {txn.type === "settlement" ? "Payment Settlement" : txn.description}
+                               {txn.type === "settlement" && txn.status === "pending" && <span className="ml-2 text-[10px] bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded-full">Pending</span>}
+                             </p>
                              <p className="text-xs text-gray-400 mt-0.5">
-                               {new Date(txn.date).toLocaleDateString()} • Paid by {txn.paidBy === user.uid ? "You" : flatMembers.find(m => m.uid === txn.paidBy)?.name?.split(" ")[0]}
+                               {new Date(txn.date).toLocaleDateString()} • {txn.type === "settlement" ? `From ${txn.from === user.uid ? "You" : flatMembers.find(m=>m.uid===txn.from)?.name?.split(" ")[0]}` : `Paid by ${txn.paidBy === user.uid ? "You" : flatMembers.find(m => m.uid === txn.paidBy)?.name?.split(" ")[0]}`}
                              </p>
                            </div>
-                           <p className="font-bold text-[#1D1D1F]">₹{txn.amount}</p>
+                           <p className={`font-bold ${txn.type === "settlement" ? "text-green-600" : "text-[#1D1D1F]"}`}>₹{txn.amount}</p>
                         </div>
                       ))}
                     </div>
@@ -437,20 +564,34 @@ export default function Dashboard() {
                 {myBalance > 0 ? "You get back overall" : myBalance < 0 ? "You owe overall" : "You are all settled up!"}
               </p>
 
-              {/* OTHER MEMBERS BALANCES */}
+              {/* EXACT DETAILED SETTLEMENTS */}
               <div className="mt-8 space-y-3 border-t border-gray-100 pt-6">
-                 <p className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-3">Group Summary</p>
-                 {flatMembers.filter(m => m.uid !== user?.uid).map(m => {
-                    const b = balances[m.uid] || 0;
-                    return (
-                       <div key={m.uid} className="flex justify-between items-center text-sm p-2 rounded-lg hover:bg-gray-50 transition-colors">
-                         <span className="font-medium text-[#1D1D1F]">{m.name?.split(" ")[0]}</span>
-                         <span className={`font-bold ${b > 0 ? "text-green-600" : b < 0 ? "text-red-600" : "text-gray-400"}`}>
-                           {b > 0 ? `Gets ₹${Math.abs(Math.round(b))}` : b < 0 ? `Owes ₹${Math.abs(Math.round(b))}` : "Settled"}
-                         </span>
-                       </div>
-                    )
-                 })}
+                 <p className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-3">How to settle up</p>
+                 
+                 {detailedDebts.length === 0 ? (
+                    <p className="text-sm text-[#86868B] italic">No pending settlements.</p>
+                 ) : (
+                    detailedDebts.map((debt, idx) => {
+                      const fromName = debt.from === user.uid ? "You" : flatMembers.find(m => m.uid === debt.from)?.name?.split(" ")[0];
+                      const toName = debt.to === user.uid ? "You" : flatMembers.find(m => m.uid === debt.to)?.name?.split(" ")[0];
+                      
+                      return (
+                        <div key={idx} className="flex justify-between items-center text-sm p-3 bg-gray-50 rounded-xl border border-gray-100">
+                          <span className="font-medium text-[#1D1D1F] flex-1">
+                            <span className={debt.from === user.uid ? "text-red-600 font-bold" : ""}>{fromName}</span> 
+                            <span className="text-gray-400 font-normal mx-1.5">owes</span> 
+                            <span className={debt.to === user.uid ? "text-green-600 font-bold" : ""}>{toName}</span>
+                          </span>
+                          <span className="font-bold text-[#1D1D1F] mr-3">₹{Math.round(debt.amount)}</span>
+                          
+                          {/* SHOW PAY BUTTON IF USER IS THE DEBTOR */}
+                          {debt.from === user.uid && (
+                            <button onClick={() => openSettleModal(debt)} className="bg-black text-white text-xs px-3 py-1.5 rounded-lg font-bold hover:bg-gray-800 active:scale-95 transition-all">Pay</button>
+                          )}
+                        </div>
+                      )
+                    })
+                 )}
                  {flatMembers.length <= 1 && (
                     <p className="text-sm text-gray-400 italic text-center py-2">Add members to see split</p>
                  )}
@@ -468,8 +609,107 @@ export default function Dashboard() {
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={closeModal} className="absolute inset-0 bg-black/30 backdrop-blur-sm" />
             
             <motion.div initial={{ opacity: 0, scale: 0.95, y: 10 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.95, y: 10 }} className="bg-white w-full max-w-md rounded-[24px] shadow-2xl relative z-10 p-6 sm:p-8 overflow-hidden max-h-[90vh] overflow-y-auto">
-              {modalType !== "pastFlatHistory" && (
+              {modalType !== "pastFlatHistory" && modalType !== "initiatePayment" && (
                 <button onClick={closeModal} className="absolute top-6 right-6 p-2 bg-[#F5F5F7] hover:bg-gray-200 rounded-full transition-colors active:scale-95"><X className="w-5 h-5 text-[#86868B]" /></button>
+              )}
+
+              {/* PAYMENT SETTINGS MODAL */}
+              {modalType === "paymentSettings" && (
+                <form onSubmit={handleSavePaymentSettings}>
+                  <div className="mb-6">
+                    <div className="w-12 h-12 bg-[#0071E3]/10 rounded-2xl flex items-center justify-center mb-4">
+                      <QrCode className="w-6 h-6 text-[#0071E3]" />
+                    </div>
+                    <h3 className="text-2xl font-bold text-[#1D1D1F]">Payment Settings</h3>
+                    <p className="text-sm text-[#86868B] mt-1">So your flatmates can pay you.</p>
+                  </div>
+                  {errorMsg && <p className="bg-red-50 text-red-600 p-3 rounded-xl text-sm font-medium mb-4 border border-red-100">{errorMsg}</p>}
+                  
+                  <div className="space-y-4 mb-8">
+                    <div>
+                      <label className="block text-sm font-semibold text-[#86868B] mb-2 ml-1">Your UPI ID</label>
+                      <input type="text" value={upiId} onChange={(e)=>setUpiId(e.target.value)} placeholder="e.g., mobilenumber@upi" className="w-full bg-[#F5F5F7] text-[#1D1D1F] px-4 py-3.5 rounded-xl text-base outline-none border border-transparent focus:border-[#0071E3] focus:bg-white transition-all" />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-semibold text-[#86868B] mb-2 ml-1">Upload QR Code (Optional)</label>
+                      <label className="w-full flex items-center justify-center gap-2 bg-[#F5F5F7] hover:bg-gray-200 text-[#1D1D1F] px-4 py-3.5 rounded-xl text-sm font-semibold cursor-pointer transition-colors border border-dashed border-gray-300">
+                        <Upload className="w-4 h-4" /> {qrFile ? qrFile.name : "Select QR Image"}
+                        <input type="file" accept="image/*" className="hidden" onChange={(e) => setQrFile(e.target.files?.[0] || null)} />
+                      </label>
+                      {userData?.qrCodeUrl && !qrFile && <p className="text-xs text-green-600 mt-2 font-medium ml-1">✓ You already have a QR code saved.</p>}
+                    </div>
+                  </div>
+                  <button type="submit" disabled={isSubmitting} className="w-full bg-[#0071E3] hover:bg-[#0077ED] disabled:opacity-50 text-white py-3.5 rounded-xl font-semibold flex items-center justify-center gap-2 transition-all active:scale-95 shadow-sm">
+                    {isSubmitting && <Loader2 className="w-5 h-5 animate-spin" />} {!isSubmitting && "Save Details"}
+                  </button>
+                </form>
+              )}
+
+              {/* INITIATE PAYMENT MODAL */}
+              {modalType === "initiatePayment" && settleData && (
+                <form onSubmit={handleSubmitPayment}>
+                  <div className="flex justify-between items-center mb-6">
+                    <h3 className="text-xl font-bold text-[#1D1D1F]">Pay {settleData.toUser.name?.split(" ")[0]}</h3>
+                    <button type="button" onClick={closeModal} className="p-2 bg-[#F5F5F7] hover:bg-gray-200 rounded-full transition-colors"><X className="w-5 h-5 text-[#86868B]" /></button>
+                  </div>
+                  {errorMsg && <p className="bg-red-50 text-red-600 p-3 rounded-xl text-sm font-medium mb-4 border border-red-100">{errorMsg}</p>}
+                  
+                  <div className="bg-gray-50 border border-gray-200 p-4 rounded-2xl mb-6 text-center">
+                    <p className="text-sm font-semibold text-gray-500 mb-1">UPI ID</p>
+                    <p className="font-bold text-[#1D1D1F] select-all">{settleData.toUser.upiId || "No UPI ID added by user"}</p>
+                    {settleData.toUser.qrCodeUrl && (
+                       <img src={settleData.toUser.qrCodeUrl} alt="QR Code" className="w-40 h-40 mx-auto mt-4 rounded-xl shadow-sm border border-gray-200" />
+                    )}
+                  </div>
+
+                  <div className="space-y-4 mb-8">
+                    <div>
+                      <label className="block text-sm font-semibold text-[#86868B] mb-2 ml-1">Paying Amount (₹)</label>
+                      <input type="number" required min="1" value={settleAmount} onChange={(e)=>setSettleAmount(e.target.value)} className="w-full bg-[#F5F5F7] text-[#1D1D1F] px-4 py-3.5 rounded-xl text-2xl font-bold outline-none border border-transparent focus:border-[#34C759] focus:bg-white transition-all" />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-semibold text-[#86868B] mb-2 ml-1">Upload Payment Screenshot</label>
+                      <label className="w-full flex items-center justify-center gap-2 bg-[#F5F5F7] hover:bg-gray-200 text-[#1D1D1F] px-4 py-3.5 rounded-xl text-sm font-semibold cursor-pointer transition-colors border border-dashed border-gray-300">
+                        <Upload className="w-4 h-4" /> {proofFile ? proofFile.name : "Select Screenshot"}
+                        <input type="file" required accept="image/*" className="hidden" onChange={(e) => setProofFile(e.target.files?.[0] || null)} />
+                      </label>
+                    </div>
+                  </div>
+                  <button type="submit" disabled={isSubmitting || !proofFile} className="w-full bg-[#34C759] hover:bg-[#2EAF4E] disabled:opacity-50 text-white py-3.5 rounded-xl font-semibold flex items-center justify-center gap-2 transition-all active:scale-95 shadow-sm">
+                    {isSubmitting && <Loader2 className="w-5 h-5 animate-spin" />} {!isSubmitting && "Submit for Approval"}
+                  </button>
+                </form>
+              )}
+
+              {/* PENDING APPROVALS MODAL */}
+              {modalType === "approvals" && (
+                <div>
+                  <div className="mb-6">
+                    <h3 className="text-xl font-bold text-[#1D1D1F]">Pending Approvals</h3>
+                    <p className="text-sm text-[#86868B] mt-1">Confirm payments sent to you.</p>
+                  </div>
+                  {pendingApprovals.length === 0 ? (
+                    <div className="text-center py-8 text-gray-500 font-medium">No pending payments.</div>
+                  ) : (
+                    <div className="space-y-4">
+                      {pendingApprovals.map(txn => (
+                        <div key={txn.transactionId} className="bg-gray-50 border border-gray-200 p-4 rounded-2xl">
+                           <div className="flex justify-between items-start mb-3">
+                             <div>
+                               <p className="font-bold text-sm">{flatMembers.find(m=>m.uid===txn.from)?.name} sent you</p>
+                               <p className="text-xs text-gray-500">{new Date(txn.date).toLocaleDateString()}</p>
+                             </div>
+                             <p className="font-bold text-lg text-green-600">₹{txn.amount}</p>
+                           </div>
+                           <a href={txn.proofUrl} target="_blank" rel="noopener noreferrer" className="text-sm text-blue-600 font-medium hover:underline mb-4 block">View Screenshot</a>
+                           <button onClick={() => handleApprovePayment(txn.transactionId)} disabled={isSubmitting} className="w-full bg-black text-white py-2.5 rounded-xl text-sm font-bold flex justify-center gap-2 items-center hover:bg-gray-800 disabled:opacity-50 active:scale-95 transition-all">
+                              {isSubmitting ? <Loader2 className="w-4 h-4 animate-spin"/> : "Approve Payment"}
+                           </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
               )}
 
               {/* 1. ADD EXPENSE MODAL */}
@@ -597,8 +837,9 @@ export default function Dashboard() {
                     <h3 className="text-2xl font-bold text-[#1D1D1F]">Previous Flats</h3>
                   </div>
                   <div className="space-y-3">
-                    {userData?.pastFlats?.map((pf: any, idx: number) => (
-                      <div key={idx} onClick={() => handleViewPastFlat(pf)} className="flex justify-between items-center p-4 bg-[#F5F5F7] border border-transparent hover:border-gray-200 rounded-2xl cursor-pointer group transition-all active:scale-95">
+                    {/* Yahan ( || [] ) lagaya hai taaki TypeScript undefined par error na de */}
+                    {(userData?.pastFlats || []).map((pf: any, idx: number) => (
+                      <div key={idx} onClick={() => { handleViewPastFlat(pf); }} className="flex justify-between items-center p-4 bg-[#F5F5F7] border border-transparent hover:border-gray-200 rounded-2xl cursor-pointer group transition-all active:scale-95">
                         <div>
                           <h4 className="font-bold text-[#1D1D1F]">{pf.flatName}</h4>
                           <p className="text-xs text-[#86868B] font-medium mt-1">Left on: {new Date(pf.leftAt).toLocaleDateString()}</p>
