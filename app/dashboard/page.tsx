@@ -410,23 +410,34 @@ export default function Dashboard() {
     document.body.removeChild(link);
   };
 
- // --- FIX: DOWNLOAD BEAUTIFUL PDF (Mobile Friendly Native Print) ---
-  const handleDownloadPDF = () => {
+  // --- FIX: TRUE DIRECT PDF DOWNLOAD (No Print Dialog, Mobile Safe) ---
+  const handleDownloadPDF = async () => {
+    const btnText = document.getElementById("pdf-btn-text");
+    if (btnText) btnText.innerText = "Wait...";
+
+    // Dynamically load html2pdf.js (No npm install needed, prevents Next.js SSR errors)
+    if (!(window as any).html2pdf) {
+      const script = document.createElement('script');
+      script.src = "https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js";
+      document.body.appendChild(script);
+      await new Promise((resolve) => { script.onload = resolve; });
+    }
+
     const totalVolume = filteredTransactions.reduce((acc, curr) => acc + curr.amount, 0);
 
     const printContent = `
-      <div style="font-family: 'Inter', sans-serif; color: #1D1D1F; padding: 20px; background: white; min-height: 100vh;">
+      <div style="font-family: Helvetica, Arial, sans-serif; color: #1D1D1F; padding: 30px; background: white;">
         <div style="text-align: center; border-bottom: 2px solid #F5F5F7; padding-bottom: 20px; margin-bottom: 30px;">
           <h1 style="margin: 0; font-size: 32px; color: #0071E3;">${flatData?.flatName || 'Flatmate Ledger'}</h1>
           <p style="margin: 5px 0 0 0; color: #86868B; font-size: 14px;">Official Transaction Ledger • Generated on ${new Date().toLocaleDateString()}</p>
         </div>
         
-        <div style="display: flex; justify-content: space-around; background: #F5F5F7; padding: 20px; border-radius: 16px; margin-bottom: 30px;">
-          <div style="text-align: center;">
+        <div style="display: flex; justify-content: space-between; background: #F5F5F7; padding: 20px; border-radius: 12px; margin-bottom: 30px;">
+          <div style="text-align: center; width: 48%;">
             <h4 style="margin: 0 0 5px 0; font-size: 12px; color: #86868B; text-transform: uppercase;">Filtered Records</h4>
             <p style="margin: 0; font-size: 24px; font-weight: 700; color: #1D1D1F;">${filteredTransactions.length}</p>
           </div>
-          <div style="text-align: center;">
+          <div style="text-align: center; width: 48%;">
             <h4 style="margin: 0 0 5px 0; font-size: 12px; color: #86868B; text-transform: uppercase;">Total Volume</h4>
             <p style="margin: 0; font-size: 24px; font-weight: 700; color: #1D1D1F;">₹${totalVolume.toLocaleString()}</p>
           </div>
@@ -435,11 +446,11 @@ export default function Dashboard() {
         <table style="width: 100%; border-collapse: collapse; margin-top: 10px;">
           <thead>
             <tr>
-              <th style="padding: 14px 15px; text-align: left; border-bottom: 1px solid #E5E5EA; background-color: #F5F5F7; font-weight: 600; font-size: 13px; color: #86868B; text-transform: uppercase;">Date</th>
-              <th style="padding: 14px 15px; text-align: left; border-bottom: 1px solid #E5E5EA; background-color: #F5F5F7; font-weight: 600; font-size: 13px; color: #86868B; text-transform: uppercase;">Description</th>
-              <th style="padding: 14px 15px; text-align: left; border-bottom: 1px solid #E5E5EA; background-color: #F5F5F7; font-weight: 600; font-size: 13px; color: #86868B; text-transform: uppercase;">Paid By</th>
-              <th style="padding: 14px 15px; text-align: left; border-bottom: 1px solid #E5E5EA; background-color: #F5F5F7; font-weight: 600; font-size: 13px; color: #86868B; text-transform: uppercase;">Amount</th>
-              <th style="padding: 14px 15px; text-align: left; border-bottom: 1px solid #E5E5EA; background-color: #F5F5F7; font-weight: 600; font-size: 13px; color: #86868B; text-transform: uppercase;">Status</th>
+              <th style="padding: 12px; text-align: left; border-bottom: 2px solid #E5E5EA; background-color: #F5F5F7; font-size: 12px; color: #86868B; text-transform: uppercase;">Date</th>
+              <th style="padding: 12px; text-align: left; border-bottom: 2px solid #E5E5EA; background-color: #F5F5F7; font-size: 12px; color: #86868B; text-transform: uppercase;">Description</th>
+              <th style="padding: 12px; text-align: left; border-bottom: 2px solid #E5E5EA; background-color: #F5F5F7; font-size: 12px; color: #86868B; text-transform: uppercase;">Paid By</th>
+              <th style="padding: 12px; text-align: left; border-bottom: 2px solid #E5E5EA; background-color: #F5F5F7; font-size: 12px; color: #86868B; text-transform: uppercase;">Amount</th>
+              <th style="padding: 12px; text-align: left; border-bottom: 2px solid #E5E5EA; background-color: #F5F5F7; font-size: 12px; color: #86868B; text-transform: uppercase;">Status</th>
             </tr>
           </thead>
           <tbody>
@@ -454,11 +465,11 @@ export default function Dashboard() {
               
               return `
                 <tr>
-                  <td style="padding: 14px 15px; text-align: left; border-bottom: 1px solid #E5E5EA; font-size: 14px;">${date}</td>
-                  <td style="padding: 14px 15px; text-align: left; border-bottom: 1px solid #E5E5EA; font-size: 14px;">${desc}</td>
-                  <td style="padding: 14px 15px; text-align: left; border-bottom: 1px solid #E5E5EA; font-size: 14px;">${fromName}</td>
-                  <td style="padding: 14px 15px; text-align: left; border-bottom: 1px solid #E5E5EA; font-size: 14px; font-weight: 600; color: ${amtColor};">₹${txn.amount.toLocaleString()}</td>
-                  <td style="padding: 14px 15px; text-align: left; border-bottom: 1px solid #E5E5EA; font-size: 12px; font-weight: bold; color: ${statusColor};">${statusText}</td>
+                  <td style="padding: 12px; border-bottom: 1px solid #E5E5EA; font-size: 13px;">${date}</td>
+                  <td style="padding: 12px; border-bottom: 1px solid #E5E5EA; font-size: 13px;">${desc}</td>
+                  <td style="padding: 12px; border-bottom: 1px solid #E5E5EA; font-size: 13px;">${fromName}</td>
+                  <td style="padding: 12px; border-bottom: 1px solid #E5E5EA; font-size: 13px; font-weight: bold; color: ${amtColor};">₹${txn.amount.toLocaleString()}</td>
+                  <td style="padding: 12px; border-bottom: 1px solid #E5E5EA; font-size: 11px; font-weight: bold; color: ${statusColor};">${statusText}</td>
                 </tr>
               `;
             }).join('')}
@@ -467,41 +478,20 @@ export default function Dashboard() {
       </div>
     `;
 
-    // 1. Remove old instances if any
-    const existingContainer = document.getElementById('pdf-print-container');
-    if (existingContainer) existingContainer.remove();
-    const existingStyle = document.getElementById('pdf-print-style');
-    if (existingStyle) existingStyle.remove();
+    const container = document.createElement('div');
+    container.innerHTML = printContent;
 
-    // 2. Create Print Container
-    const printContainer = document.createElement('div');
-    printContainer.id = 'pdf-print-container';
-    printContainer.innerHTML = printContent;
-    document.body.appendChild(printContainer);
-
-    // 3. Inject Print CSS (Hides everything else on the screen ONLY during print)
-    const style = document.createElement('style');
-    style.id = 'pdf-print-style';
-    style.innerHTML = `
-      @media print {
-        body > *:not(#pdf-print-container) { display: none !important; }
-        #pdf-print-container { display: block !important; position: absolute; left: 0; top: 0; width: 100%; background: white; z-index: 99999; }
-      }
-      @media screen {
-        #pdf-print-container { display: none !important; }
-      }
-    `;
-    document.head.appendChild(style);
-
-    // 4. Call Print Dialog
-    window.print();
-
-    // 5. Cleanup DOM *ONLY* after the print dialog is closed
-    window.onafterprint = () => {
-      document.getElementById('pdf-print-container')?.remove();
-      document.getElementById('pdf-print-style')?.remove();
-      window.onafterprint = null; // reset listener
+    const opt = {
+      margin:       0.2,
+      filename:     `${flatData?.flatName || 'Flat'}_Filtered_Ledger.pdf`,
+      image:        { type: 'jpeg', quality: 0.98 },
+      html2canvas:  { scale: 2, useCORS: true },
+      jsPDF:        { unit: 'in', format: 'letter', orientation: 'portrait' }
     };
+
+    (window as any).html2pdf().set(opt).from(container).save().then(() => {
+      if (btnText) btnText.innerText = "PDF";
+    });
   };
 
   // --- SAVE PAYMENT SETTINGS (base64) ---
@@ -787,14 +777,14 @@ export default function Dashboard() {
       <main className="max-w-5xl mx-auto px-4 sm:px-6 mt-8 sm:mt-10 relative">
         <div className="flex items-center justify-between mb-8">
           <div>
-            <h2 className="text-2xl sm:text-3xl font-bold text-[#1D1D1F] tracking-tight">Hello, {user.displayName?.split(" ")[0]}</h2>
+            <h2 className="text-2xl sm:text-3xl font-bold text-[#1D1D1F] tracking-tight">Hello, {user?.displayName?.split(" ")[0] || "User"}</h2>
             <p className="text-[#86868B] text-sm sm:text-base mt-1">Manage your shared expenses simply.</p>
           </div>
-          {user.photoURL ? (
+          {user?.photoURL ? (
             <img src={user.photoURL} alt="Profile" className="w-12 h-12 rounded-full shadow-sm bg-white border border-gray-200 object-cover" onError={(e) => (e.currentTarget.style.display = 'none')} />
           ) : (
              <div className="w-12 h-12 rounded-full bg-[#0071E3]/10 text-[#0071E3] flex items-center justify-center font-bold text-lg shadow-sm">
-               {getInitials(user.displayName)}
+               {getInitials(user?.displayName)}
              </div>
           )}
         </div>
@@ -819,10 +809,10 @@ export default function Dashboard() {
                    <h3 className="font-bold text-2xl flex items-center gap-2">
                      {flatData?.flatName} 
                      {isLocked && (
-  <span title="Flat is Locked">
-    <ShieldAlert className="w-5 h-5 text-red-500" />
-  </span>
-)}
+                       <span title="Flat is Locked">
+                         <ShieldAlert className="w-5 h-5 text-red-500" />
+                       </span>
+                     )}
                    </h3>
                    <p className="text-sm text-[#86868B] mt-1 flex items-center gap-1"><MapPin className="w-3 h-3"/> {flatData?.address?.split(',')[0]}</p>
                  </div>
@@ -977,7 +967,7 @@ export default function Dashboard() {
                     <h3 className="text-2xl font-bold text-[#1D1D1F]">Full Ledger</h3>
                     <div className="flex gap-2">
                        <button onClick={handleDownloadReport} title="Download CSV Data" className="text-[#0071E3] bg-[#0071E3]/10 hover:bg-[#0071E3]/20 px-3 py-1.5 rounded-lg font-bold text-sm flex items-center gap-1.5 transition-colors"><Download className="w-4 h-4"/> CSV</button>
-                       <button onClick={handleDownloadPDF} title="Download PDF Report" className="text-red-600 bg-red-100 hover:bg-red-200 px-3 py-1.5 rounded-lg font-bold text-sm flex items-center gap-1.5 transition-colors"><FileText className="w-4 h-4"/> PDF</button>
+                       <button onClick={handleDownloadPDF} title="Download PDF Report" className="text-red-600 bg-red-100 hover:bg-red-200 px-3 py-1.5 rounded-lg font-bold text-sm flex items-center gap-1.5 transition-colors"><FileText className="w-4 h-4"/> <span id="pdf-btn-text">PDF</span></button>
                        <button onClick={closeModal} className="p-1.5 bg-[#F5F5F7] hover:bg-gray-200 rounded-full transition-colors"><X className="w-5 h-5 text-[#86868B]" /></button>
                     </div>
                   </div>
